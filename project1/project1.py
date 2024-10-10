@@ -156,23 +156,25 @@ class StochasticLocalSearch(BayesNetwork):
 
     def fit(self):
         y = self.bayesian_score()
-        best_y, best_G = y, self.G.copy() 
+        y_max, G_max = y, self.G.copy()
 
         temp = self.init_temp
         cnt_trials = 0 # number of iterations since last update
         for iter in range(self.max_iter):
             bn_neighbor = self.rand_graph_neighbor()
-            y_ = bn_neighbor.bayesian_score()
-            d_y = y_ - y
+            y_neighbor = bn_neighbor.bayesian_score()
+            d_y = y_neighbor - y
             if d_y > 0:
-                self.searches[iter] = (self.G.copy(), d_y, y_)
-                y, self.G = y_, bn_neighbor.G.copy()
+                self.searches[iter] = (self.G.copy(), d_y, y_neighbor)
+                y = y_neighbor
+                self.G = bn_neighbor.G.copy()
                 cnt_trials = 0
             else:
                 threshold = np.exp(d_y / temp)
                 if np.random.uniform(0, 1) < threshold:
-                    self.searches[iter] = (self.G.copy(), d_y, y_)
-                    y, self.G = y_, bn_neighbor.G.copy()
+                    self.searches[iter] = (self.G.copy(), d_y, y_neighbor)
+                    y = y_neighbor
+                    self.G = bn_neighbor.G.copy()
                     cnt_trials = 0
                 
                 else:
@@ -182,20 +184,22 @@ class StochasticLocalSearch(BayesNetwork):
             
             # Randomized restart
             if cnt_trials == self.restart_threshold:
-                if y > best_y:
-                    best_G = self.G.copy()
-                    best_y = y
+                if y > y_max:
+                    G_max = self.G.copy()
+                    y_max = y
                 
-                graph, score = self.restart_G(iter)
-                self.G, y = graph.copy(), score
-                temp = self.init_temp
+                G_restart, y_restart = self.restart_G(iter)
+                self.G = G_restart.copy()
+                y = y_restart
                 cnt_trials = 0
+                temp = self.init_temp
 
-            if cnt_trials == self.max_iter:
-                best_G = self.G.copy()
+        if self.cnt_restart == 0:
+            G_max = self.G.copy()
+            return self.G.bayesian_score()
 
-        self.G = best_G.copy()
-        return self.bayesian_score()
+        self.G = G_max.copy()
+        return y_max
         
 def mutual_information_rank(data):
     bayes_net = BayesNetwork(data)
