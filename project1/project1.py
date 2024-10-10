@@ -4,6 +4,7 @@ import networkx as nx
 from functools import lru_cache
 from scipy.special import loggamma
 from itertools import product
+import random
 
 def write_gph(dag, idx2names, filename):
     with open(filename, 'w') as f:
@@ -115,14 +116,21 @@ def randint_exclude(low, high, exclude):
             return num
     
 class StochasticLocalSearch(BayesNetwork):
-    def __init__(self, x, G=None):
+    def __init__(self, x, G=None, initial_temperature=1.0, cooling_rate=0.99, max_iter=1000, restart_threshold=100, max_parents=3):
         super().__init__(x)
+        self.max_iter = max_iter
+        self.init_temp = initial_temperature
+        self.cooling_rate = cooling_rate
+        self.restart_threshold = restart_threshold
+        self.max_parents = max_parents
+        self.cnt_restart = 0
+
+        self.searches = {} # iter -> Graph at that stage
         if G is not None:
             self.G = G.copy()
-    
+        
     def rand_graph_neighbor(self):
         bn = self.copy()
-
         while True:
             i = np.random.randint(0, self.n)
             j = randint_exclude(0, self.n, i)
@@ -131,18 +139,63 @@ class StochasticLocalSearch(BayesNetwork):
                 return bn
             
             elif not nx.has_path(bn.G, j, i):
-                bn.G.add_edge(i, j)
-                return bn
+                if len(list(self.G.predecessors(i))) < self.max_parents:
+                    bn.G.add_edge(i, j)
+                    return bn
     
-    def fit(self, max_steps):
+    def restart_G(self, iter):
+        self.cnt_restart += 1
+        while True:
+            key = random.choice(list(self.searches.keys()))
+            if iter == key:
+                continue
+            
+            G, d_y, y = self.searches[key]
+            if d_y > 0:
+                return G, y
+
+    def fit(self):
         y = self.bayesian_score()
-        for _ in range(max_steps):
+        best_y, best_G = y, self.G.copy() 
+
+        temp = self.init_temp
+        cnt_trials = 0 # number of iterations since last update
+        for iter in range(self.max_iter):
             bn_neighbor = self.rand_graph_neighbor()
             y_ = bn_neighbor.bayesian_score()
-            if y_ > y:
+            d_y = y_ - y
+            if d_y > 0:
+                self.searches[iter] = (self.G.copy(), d_y, y_)
                 y, self.G = y_, bn_neighbor.G.copy()
-        
-        return y
+                cnt_trials = 0
+            else:
+                threshold = np.exp(d_y / temp)
+                if np.random.uniform(0, 1) < threshold:
+                    self.searches[iter] = (self.G.copy(), d_y, y_)
+                    y, self.G = y_, bn_neighbor.G.copy()
+                    cnt_trials = 0
+                
+                else:
+                    cnt_trials += 1
+            
+            temp *= self.cooling_rate
+            
+            # Randomized restart
+            if cnt_trials == self.restart_threshold:
+                if y > best_y:
+                    best_G = self.G.copy()
+                    best_y = y
+                
+                graph, score = self.restart_G(iter)
+                self.G, y = graph.copy(), score
+                temp = self.init_temp
+                cnt_trials = 0
+
+            if cnt_trials == self.max_iter:
+                best_G = self.G.copy()
+
+        self.G = best_G.copy()
+        return self.bayesian_score()
         
 def mutual_information_rank(data):
     bayes_net = BayesNetwork(data)
@@ -181,14 +234,14 @@ def compute(infile, outfile):
     x, x_header = read_csv_to_array(infile)
     
     k2 = K2Search(x)
-    bs = k2.fit(max_parents=3)
+    bs = k2.fit(max_parents=2)
     print('....\n With default ordering')
     print(f'Bayesian Score: {bs}')
     print(f'Edges: {k2.G.edges}')
 
     mi_ordering, mi_scores = mutual_information_rank(x)
     k2 = K2Search(x, ordering=mi_ordering)
-    bs = k2.fit(max_parents=3)
+    bs = k2.fit(max_parents=2)
     print('....\n With MI ordering')
     print(f'Bayesian Score: {bs}')
     print(f'Edges: {k2.G.edges}')
@@ -196,11 +249,22 @@ def compute(infile, outfile):
 
 
     print('\nStochasic local search')
-    lSerach = StochasticLocalSearch(x)
-    bs = lSerach.fit(1000)
+    lSearch = StochasticLocalSearch(x, max_iter=2000)
+    bs = lSearch.fit()
     print(f'Bayesian Score: {bs}')
-    print(f'Edges: {lSerach.G.edges}')
-    print(nx.is_directed_acyclic_graph(lSerach.G))
+    print(f'Edges: {lSearch.G.edges}')
+    print(nx.is_directed_acyclic_graph(lSearch.G))
+    print(f'Number of restarts: {lSearch.cnt_restart}')
+    #print('\n',[(k, v[1]) for k, v in lSearch.searches.items()])
+
+    print('\nStochasic local search with graph initialized from k2')
+    lSearch = StochasticLocalSearch(x, G=k2.G, max_iter=2000)
+    bs = lSearch.fit()
+    print(f'Bayesian Score: {bs}')
+    print(f'Edges: {lSearch.G.edges}')
+    print(nx.is_directed_acyclic_graph(lSearch.G))
+    print(f'Number of restarts: {lSearch.cnt_restart}')
+
 
     # old testing code
     '''
