@@ -5,6 +5,7 @@ from functools import lru_cache
 from scipy.special import loggamma
 from itertools import product
 import random
+from tqdm import tqdm
 
 def write_gph(dag, idx2names, filename):
     with open(filename, 'w') as f:
@@ -233,10 +234,61 @@ def mutual_information_rank(data):
     mi_scores = mi
     return mi_ordering, mi_scores
 
+def perturb_ordering(ordering, swap_prob=0.25, max_swaps=-1):
+    if max_swaps == -1:
+        max_swaps = int(len(ordering)*(3/4))
+
+    for _ in range(max_swaps):
+        if random.random() < swap_prob:
+            i = random.randint(0, len(ordering) - 2)
+            ordering[i], ordering[i+1] = ordering[i+1], ordering[i]
+    return ordering
+
+def boostrap_fit(x, M):
+    # M number of bootstrap iters(tries, most do not result in unique ordering)
+    # resample x -> x_sample
+    # for each x_sample, get mutual information rank of variables
+    # for all unique mutual_information ranks, run k2 with that rank
+    # and then start local search from the graph generated from k2
+
+    ordering_ls = set()
+    for _ in range(M):
+        x_sample = x[np.random.choice(x.shape[0], x.shape[0], replace=True)]
+        mi_rank = mutual_information_rank(x_sample)[0]
+        rank_perturbed = perturb_ordering(mi_rank) # tune swap prob
+        ordering_ls.add(tuple(rank_perturbed))
+
+    print('',f'Number of variable orders: {len(ordering_ls)}')
+    networks_out = []
+
+    for o in tqdm(ordering_ls):
+        k2 = K2Search(x, ordering=o)
+        k2_score = k2.fit(max_parents=2)
+
+        local_search = StochasticLocalSearch(x, k2.G)
+        local_search_score = local_search.fit()
+
+        networks_out.append((k2.G.copy(), k2_score, local_search.G.copy(), local_search_score))
+
+
+    k2_scores = [x[1] for x in networks_out]
+    l_scores = [x[3] for x in networks_out]
+
+    print(f'K2 Min: {min(k2_scores)}')
+    print(f'K2 Max: {max(k2_scores)}')
+
+    print(f'Local Search Min: {min(l_scores)}')
+    print(f'Local Search Max: {max(l_scores)}')
+
+    return networks_out
 
 def compute(infile, outfile):
     x, x_header = read_csv_to_array(infile)
+
+    networks = boostrap_fit(x, 1000)
+
     
+    """
     k2 = K2Search(x)
     bs = k2.fit(max_parents=2)
     print('....\n With default ordering')
@@ -253,7 +305,7 @@ def compute(infile, outfile):
 
 
     print('\nStochasic local search')
-    lSearch = StochasticLocalSearch(x, max_iter=2000)
+    lSearch = StochasticLocalSearch(x, max_iter=10000)
     bs = lSearch.fit()
     print(f'Bayesian Score: {bs}')
     print(f'Edges: {lSearch.G.edges}')
@@ -262,12 +314,13 @@ def compute(infile, outfile):
     #print('\n',[(k, v[1]) for k, v in lSearch.searches.items()])
 
     print('\nStochasic local search with graph initialized from k2')
-    lSearch = StochasticLocalSearch(x, G=k2.G, max_iter=2000)
+    lSearch = StochasticLocalSearch(x, G=k2.G, max_iter=10000)
     bs = lSearch.fit()
     print(f'Bayesian Score: {bs}')
     print(f'Edges: {lSearch.G.edges}')
     print(nx.is_directed_acyclic_graph(lSearch.G))
     print(f'Number of restarts: {lSearch.cnt_restart}')
+    """
 
 
     # old testing code
