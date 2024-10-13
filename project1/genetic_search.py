@@ -6,6 +6,9 @@ from scipy.special import loggamma
 from itertools import product
 import random
 from tqdm import tqdm
+import utils
+import logging
+import pickle
 
 def write_gph(dag, idx2names, filename):
     with open(filename, 'w') as f:
@@ -285,35 +288,64 @@ class GeneticSearch:
 
 
     def fit(self, n_generations):
-        print(f'Population size: {self.population_size}')
+        logging.info(f'Start training GeneticSearch')
         for i in tqdm(range(n_generations), desc="Training BN structure", disable=True):
-            print(f'Generation: {i+1}')
+            logging.info(f'Generation: {i+1}')
             bayesian_networks = self.next_gen()
 
             candidates = [(b.G.copy(), b.bayesian_score()) for b in bayesian_networks]
             candidates.sort(key = lambda x: x[1], reverse = True)
 
-            print(f'\nTop Candidate Bayesian Score: {candidates[0][1]}')
-            print(f'Top Candidate edges: {candidates[0][0].edges}')
+            logging.info(f'Top Candidate Bayesian Score: {candidates[0][1]}')
+            logging.info(f'Top Candidate edges: {candidates[0][0].edges}')
 
-            print(f'\nWorst candidate Bayesian Score: {candidates[-1][1]}')
-            print(f'Worst candidate edges: {candidates[-1][0].edges}')
+            logging.info(f'Worst candidate Bayesian Score: {candidates[-1][1]}')
+            logging.info(f'Worst candidate edges: {candidates[-1][0].edges}')
+        
+        logging.info(f'Traning GeneticSearch completed')
+
+def dump_last_generation(genetic_search: GeneticSearch, filename):
+    bn = [BayesNetwork(genetic_search.x, G) for G in genetic_search.population]
+    candidates = [(b.G.copy(), b.bayesian_score()) for b in bn]
+    candidates.sort(key = lambda x: x[1], reverse = True)
+    top_score = candidates[0][1]
+
+    with open(f'pickles/{filename}_({(round(top_score, 2))}).pkl', 'wb') as f:
+        pickle.dump(genetic_search, f)
 
 
 def compute(infile, outfile):
     x, x_header = read_csv_to_array(infile)
+    utils.initLogging(f"genetic_{infile.split('.')[0]}")
 
     n = x.shape[1]
     mi_constraints = {i:{'l': [n-1]} for i in range(n - 1)} # force "response" variable to have lowest mi_rank
+    population_size = 1000
 
-    genetic_search = GeneticSearch(x, population_size=10000, max_in_degree=3, mi_constraints=mi_constraints)
+    logging.info(f"Running GeneticSearch, population size {population_size}, default params")
+    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3)
     genetic_search.init_population()
     genetic_search.fit(n_generations=10)
+    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_default")
 
-    print('\nNot bootstrap, higher random init pop')
-    genetic_search = GeneticSearch(x, population_size=10000, max_in_degree=3, mi_constraints=mi_constraints)
-    genetic_search.init_population(structured_ratio=.5, bootstrap=False)
+    logging.info(f"Running GeneticSearch, population size {population_size}, No bootstap, majority random initial population")
+    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3)
+    genetic_search.init_population(structured_ratio=.25, bootstrap=False)
     genetic_search.fit(n_generations=10)
+    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_more_random")
+
+    logging.info(f"Running GeneticSearch, population size {population_size}, default params, with mi_constraints")
+    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3, mi_constraints=mi_constraints)
+    genetic_search.init_population()
+    genetic_search.fit(n_generations=10)
+    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_default")
+
+    logging.info(f"Running GeneticSearch, population size {population_size}, No bootstap, majority random initial population, with mi_constraints")
+    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3, mi_constraints=mi_constraints)
+    genetic_search.init_population(structured_ratio=.25, bootstrap=False)
+    genetic_search.fit(n_generations=10)
+    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_more_random")
+
 
 def main():
     if len(sys.argv) != 3:
