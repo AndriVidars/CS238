@@ -81,8 +81,11 @@ class BayesNetwork:
                     p += loggamma(1 + m_ijk[k]) # uniform prior, denominator term eliminated
         
         return p
-       
-def mutual_information(data):
+
+# somewhat modified mutual_information       
+def mutual_information(data, constraints=None):
+    # constraints: {node: [lowest(list of forced lowest mi rank in order), highest()]}
+
     bayes_net = BayesNetwork(data)
     x_values_range = bayes_net.x_values_range
     n = bayes_net.n
@@ -108,7 +111,29 @@ def mutual_information(data):
     for i in range(n):
         for j in range(i+1, n):
             mi_matrix[i, j] = mi_matrix[j, i] = pairwise_mi(i, j)
+    
+    if constraints:
+        mi_max_copy = mi_matrix.copy()
+        mi_min_copy = mi_matrix.copy()
+        np.fill_diagonal(mi_max_copy, -np.inf)
+        np.fill_diagonal(mi_min_copy, np.inf)
+        for i in range(n):
+            if i in constraints.keys():
+                std = np.std(mi_matrix[i, :]) # use this or some other
 
+                # note this makes the mi_matrix unsymmetric, but it should be like that
+                if 'h' in constraints[i].keys():
+                    max_i = np.max(mi_max_copy[i, :]) + std
+                    for n in reversed(constraints[i]['h']):
+                        mi_matrix[i][n] = max_i
+                        max_i += std
+                
+                if 'l' in constraints[i].keys():
+                    min_i = np.min(mi_min_copy[i, :]) - std
+                    for n in reversed(constraints[i]['l']):
+                        mi_matrix[i][n] = min_i
+                        min_i -= std
+                    
     return mi_matrix
 
 def generate_random_dag(num_nodes, max_in_degree=2, mi_matrix=None):
@@ -206,13 +231,13 @@ def mutate_bayesian_dag(G, max_in_degree, mutation_rate=0.001, mi_matrix=None):
 
 # TODO: parrallelize fit, do local search after some population
 class GeneticSearch:
-    def __init__(self, x, population_size, max_in_degree=4):
+    def __init__(self, x, population_size, max_in_degree=4, mi_constraints=None):
         self.x = x
         self.num_nodes = x.shape[1]
         self.max_in_degree = max_in_degree
         self.population_size = population_size
         self.population = []
-        self.mi_matrix = mutual_information(x)
+        self.mi_matrix = mutual_information(x, mi_constraints)
     
     def init_population(self, structured_ratio=0.75, bootstrap=True):
         # structured_ratio: number of candidates in initial population
@@ -278,12 +303,15 @@ class GeneticSearch:
 def compute(infile, outfile):
     x, x_header = read_csv_to_array(infile)
 
-    genetic_search = GeneticSearch(x, population_size=10000, max_in_degree=3)
+    n = x.shape[1]
+    mi_constraints = {i:{'l': [n-1]} for i in range(n - 1)} # force "response" variable to have lowest mi_rank
+
+    genetic_search = GeneticSearch(x, population_size=10000, max_in_degree=3, mi_constraints=mi_constraints)
     genetic_search.init_population()
     genetic_search.fit(n_generations=10)
 
     print('\nNot bootstrap, higher random init pop')
-    genetic_search = GeneticSearch(x, population_size=10000, max_in_degree=3)
+    genetic_search = GeneticSearch(x, population_size=10000, max_in_degree=3, mi_constraints=mi_constraints)
     genetic_search.init_population(structured_ratio=.5, bootstrap=False)
     genetic_search.fit(n_generations=10)
 
