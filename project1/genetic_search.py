@@ -9,6 +9,8 @@ from tqdm import tqdm
 import utils
 import logging
 import pickle
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def write_gph(dag, idx2names, filename):
     with open(filename, 'w') as f:
@@ -232,7 +234,29 @@ def mutate_bayesian_dag(G, max_in_degree, mutation_rate=0.001, mi_matrix=None):
     
     return mutated_G
 
-# TODO: parrallelize fit, do local search after some population
+def create_bayes_network(args):
+    x, G = args
+    return BayesNetwork(x, G)
+
+def generate_offspring(args):
+    parent1, parent2, max_in_degree, mi_matrix, mutation_rate = args
+    offspring = crossover_bayesian_dags(parent1, parent2, max_in_degree, mi_matrix)
+    mutated_offspring = mutate_bayesian_dag(offspring, max_in_degree, mutation_rate, mi_matrix)
+    return mutated_offspring
+
+def compute_candidate(bayes_net):
+    return (bayes_net.G.copy(), bayes_net.bayesian_score())
+
+def generate_random_dag_wrapper(args):
+    num_nodes, max_in_degree, mi_matrix = args
+    return generate_random_dag(num_nodes, max_in_degree, mi_matrix)
+
+def generate_structured_random_dag(args):
+    x, num_nodes, max_in_degree, bootstrap = args
+    x_ = x[np.random.choice(x.shape[0], x.shape[0], replace=True)] if bootstrap else x
+    mi_matrix = mutual_information(x_)
+    return generate_random_dag(num_nodes, max_in_degree, mi_matrix=mi_matrix)
+
 class GeneticSearch:
     def __init__(self, x, population_size, max_in_degree=4, mi_constraints=None):
         self.x = x
@@ -243,19 +267,26 @@ class GeneticSearch:
         self.mi_matrix = mutual_information(x, mi_constraints)
     
     def init_population(self, structured_ratio=0.75, bootstrap=True):
-        # structured_ratio: number of candidates in initial population
-        # generated with mi_ranks
-        
+        # structured_ratio: fraction of candidates generated with mutual information ranking
+        logging.info(f"Generating initial population with structured ratio: {structured_ratio}")
         cnt_random_candidates = int((1 - structured_ratio) * self.population_size)
-        cnt_structuerd_candidats = self.population_size - cnt_random_candidates
+        cnt_structured_candidates = self.population_size - cnt_random_candidates
 
-        for _ in tqdm(range(cnt_random_candidates), desc='Init pop, generating random DAGs', disable=True):
-            self.population.append(generate_random_dag(self.num_nodes, max_in_degree=2))
+        num_cores = multiprocessing.cpu_count()
         
-        for _ in tqdm(range(cnt_structuerd_candidats), desc='Init pop, generating mi ranked random DAGs', disable=True):
-            x_ = self.x[np.random.choice(self.x.shape[0], self.x.shape[0], replace=True)] if bootstrap else self.x
-            mi_matrix = mutual_information(x_)
-            self.population.append(generate_random_dag(self.num_nodes, max_in_degree=2, mi_matrix=mi_matrix))
+        # Generate random DAGs without mi_matrix in parallel
+        args_list = [(self.num_nodes, 2, None) for _ in range(cnt_random_candidates)]
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            random_dags = list(executor.map(generate_random_dag_wrapper, args_list))
+        
+        self.population.extend(random_dags)
+        
+        # Generate DAGs with mi_matrix in parallel
+        args_list = [(self.x, self.num_nodes, 2, bootstrap) for _ in range(cnt_structured_candidates)]
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            structured_dags = list(executor.map(generate_structured_random_dag, args_list))
+        
+        self.population.extend(structured_dags)
 
     def select_candidate(self, candidates):
         fitness_scores = [x[1] for x in candidates]
@@ -266,32 +297,56 @@ class GeneticSearch:
         return random.choices(population, weights=selection_probs, k=1)[0]
     
     def next_gen(self, mutation_rate=0.025, elite_ratio=0.1):
-        # TODO: maybe add some variability into size of next generation
-        
-        bayesian_networks = [BayesNetwork(self.x, G) for G in self.population]
-        candidates = [(b.G.copy(), b.bayesian_score()) for b in bayesian_networks]
-        candidates.sort(key = lambda x: x[1], reverse = True)
-        
-        new_population = []
-        elites = [x[0] for x in candidates[:int(self.population_size*elite_ratio)]]
-        new_population.extend(elites)
+        num_cores = multiprocessing.cpu_count()
 
-        for _ in tqdm(range(len(elites), self.population_size), desc="Crossover generation", disable=True):
-            parent1 = self.select_candidate(candidates)
-            parent2 = self.select_candidate(candidates)
-            offspring = crossover_bayesian_dags(parent1, parent2, self.max_in_degree, self.mi_matrix)
-            offspring = mutate_bayesian_dag(offspring, self.max_in_degree, mutation_rate, self.mi_matrix)
-            new_population.append(offspring)
-        
+        args_list = [(self.x, G) for G in self.population]
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            bayesian_networks = list(executor.map(create_bayes_network, args_list))
+
+        # Compute candidates
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            candidates = list(executor.map(compute_candidate, bayesian_networks))        
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        elite_count = int(self.population_size * elite_ratio)
+        elites = [x[0] for x in candidates[:elite_count]]
+        new_population = elites.copy()
+
+        # Prepare arguments for generate_offspring
+        offspring_count = self.population_size - elite_count
+        args_list = [
+            (
+                self.select_candidate(candidates),
+                self.select_candidate(candidates),
+                self.max_in_degree,
+                self.mi_matrix,
+                mutation_rate,
+            )
+            for _ in range(offspring_count)
+        ]
+
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            offspring_list = list(executor.map(generate_offspring, args_list))
+
+        new_population.extend(offspring_list)
         self.population = new_population
-        return [BayesNetwork(self.x, G) for G in self.population]
+
+        # Prepare arguments for create_bayes_network again
+        args_list = [(self.x, G) for G in self.population]
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            return list(executor.map(create_bayes_network, args_list))
 
 
     def fit(self, n_generations):
+        num_cores = multiprocessing.cpu_count()
         logging.info(f'Start training GeneticSearch')
         for i in tqdm(range(n_generations), desc="Training BN structure", disable=True):
             logging.info(f'Generation: {i+1}')
             bayesian_networks = self.next_gen()
+
+            with ProcessPoolExecutor(max_workers=num_cores) as executor:
+                candidates = list(executor.map(compute_candidate, bayesian_networks))
 
             candidates = [(b.G.copy(), b.bayesian_score()) for b in bayesian_networks]
             candidates.sort(key = lambda x: x[1], reverse = True)
@@ -305,14 +360,20 @@ class GeneticSearch:
         logging.info(f'Traning GeneticSearch completed')
 
 def dump_last_generation(genetic_search: GeneticSearch, filename):
-    bn = [BayesNetwork(genetic_search.x, G) for G in genetic_search.population]
-    candidates = [(b.G.copy(), b.bayesian_score()) for b in bn]
-    candidates.sort(key = lambda x: x[1], reverse = True)
+    num_cores = multiprocessing.cpu_count()
+
+    args_list = [(genetic_search.x, G) for G in genetic_search.population]
+    with ProcessPoolExecutor(max_workers=num_cores) as executor:
+        bayesian_networks = list(executor.map(create_bayes_network, args_list))
+    
+    with ProcessPoolExecutor(max_workers=num_cores) as executor:
+        candidates = list(executor.map(compute_candidate, bayesian_networks))
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
     top_score = candidates[0][1]
 
     with open(f'pickles/{filename}_({(round(top_score, 2))}).pkl', 'wb') as f:
-        pickle.dump(genetic_search, f)
-
+        pickle.dump(candidates, f)
 
 def compute(infile, outfile):
     x, x_header = read_csv_to_array(infile)
@@ -320,7 +381,7 @@ def compute(infile, outfile):
 
     n = x.shape[1]
     mi_constraints = {i:{'l': [n-1]} for i in range(n - 1)} # force "response" variable to have lowest mi_rank
-    population_size = 1000
+    population_size = 25000
 
     logging.info(f"Running GeneticSearch, population size {population_size}, default params")
     genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3)
