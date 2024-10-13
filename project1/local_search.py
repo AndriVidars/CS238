@@ -103,7 +103,7 @@ class StochasticLocalSearch(BayesNetwork):
 
 
 def dump_best_network(graph, M, name):
-    with open(f'boostrap_{M}_{name}.pkl', 'wb') as f:
+    with open(f'pickles/bootstrap_{M}_{name}.pkl', 'wb') as f:
         pickle.dump(graph, f)
 
 def generate_ordering(x):
@@ -126,13 +126,13 @@ def boostrap_fit(x, M):
     # for each x_sample, get mutual information rank of variables
     # for all unique mutual_information ranks, run k2 with that rank
     # and then start local search from the graph generated from k2
+    num_cores = multiprocessing.cpu_count()
     logging.info(f"Running bootstrap localsearch fit, M = {M}")
     with ProcessPoolExecutor(max_workers=num_cores) as executor:
         orderings = list(executor.map(generate_ordering, [x] * M))
     ordering_ls = set(orderings)
     
     logging.info(f'Number of unique variable orders: {len(ordering_ls)}')
-    num_cores = multiprocessing.cpu_count()
     args_list = [(x, o) for o in ordering_ls]
     
     with ProcessPoolExecutor(max_workers=num_cores) as executor:

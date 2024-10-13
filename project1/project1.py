@@ -1,7 +1,9 @@
 import sys
 import numpy as np
 import networkx as nx
-
+import utils
+import genetic_search
+import local_search
 
 def write_gph(dag, idx2names, filename):
     with open(filename, 'w') as f:
@@ -17,68 +19,21 @@ def read_csv_to_array(infile):
     return x, header
     
 
-
-
-
 def compute(infile, outfile):
     x, x_header = read_csv_to_array(infile)
+    utils.initLogging(f"both_{infile.split('.')[0]}")
 
-    networks = boostrap_fit(x, 1000)
+    n_samples = 1000
+    local_search.boostrap_fit(x, n_samples)
 
-    
-    """
-    k2 = K2Search(x)
-    bs = k2.fit(max_parents=2)
-    print('....\n With default ordering')
-    print(f'Bayesian Score: {bs}')
-    print(f'Edges: {k2.G.edges}')
+    population_size = 5000
+    bootstrap_init = True
+    structured_init_ratio = 0.5
+    max_in_degree = 3
+    n_generations = 10
 
-    mi_ordering, mi_scores = mutual_information_rank(x)
-    k2 = K2Search(x, ordering=mi_ordering)
-    bs = k2.fit(max_parents=2)
-    print('....\n With MI ordering')
-    print(f'Bayesian Score: {bs}')
-    print(f'Edges: {k2.G.edges}')
-    print(nx.is_directed_acyclic_graph(k2.G))
-
-
-    print('\nStochasic local search')
-    lSearch = StochasticLocalSearch(x, max_iter=10000)
-    bs = lSearch.fit()
-    print(f'Bayesian Score: {bs}')
-    print(f'Edges: {lSearch.G.edges}')
-    print(nx.is_directed_acyclic_graph(lSearch.G))
-    print(f'Number of restarts: {lSearch.cnt_restart}')
-    #print('\n',[(k, v[1]) for k, v in lSearch.searches.items()])
-
-    print('\nStochasic local search with graph initialized from k2')
-    lSearch = StochasticLocalSearch(x, G=k2.G, max_iter=10000)
-    bs = lSearch.fit()
-    print(f'Bayesian Score: {bs}')
-    print(f'Edges: {lSearch.G.edges}')
-    print(nx.is_directed_acyclic_graph(lSearch.G))
-    print(f'Number of restarts: {lSearch.cnt_restart}')
-    """
-
-
-    # old testing code
-    '''
-    k2 = K2Search(x)
-    m_ijk, mij_0 = k2.m(4, ((2, 1), (3, 2)))
-    bs = k2.bayesian_score()
-
-    k2.G.add_edge(0,1)
-    k2.G.add_edge(0,3)
-    k2.G.add_edge(1,4)
-    k2.G.add_edge(1,6)
-    k2.G.add_edge(2,6)
-
-    bs1 = k2.bayesian_score()
-    '''
-
-    # WRITE YOUR CODE HERE
-    # FEEL FREE TO CHANGE ANYTHING ANYWHERE IN THE CODE
-    # THIS INCLUDES CHANGING THE FUNCTION NAMES, MAKING THE CODE MODULAR, BASICALLY ANYTHING
+    genetic_search.compute_genetic_search(x, population_size, bootstrap_init,
+        structured_init_ratio, max_in_degree, n_generations)
 
 def main():
     if len(sys.argv) != 3:

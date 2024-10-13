@@ -11,7 +11,6 @@ from concurrent.futures import ProcessPoolExecutor
 from bayes_network import BayesNetwork, mutual_information
 
     
-
 def generate_random_dag(num_nodes, max_in_degree=2, mi_matrix=None):
     # generate random DAG
     # if mi_matrix: then use mutual_information 
@@ -254,47 +253,3 @@ def compute_genetic_search(x, population_size, bootstrap_init, structured_init_r
     genetic_search.init_population(structured_ratio=structured_init_ratio, bootstrap=bootstrap_init)
     genetic_search.fit(n_generations=n_generations)
     return dump_last_generation(genetic_search, f"{dumpfilename}") # this returns candidates from last generation
-
-def compute(infile, outfile):
-    x, x_header = read_csv_to_array(infile)
-    utils.initLogging(f"genetic_{infile.split('.')[0]}")
-    population_size = 25000
-
-    logging.info(f"Running GeneticSearch, population size {population_size}, default params")
-    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3)
-    genetic_search.init_population()
-    genetic_search.fit(n_generations=10)
-    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_default")
-
-    logging.info(f"Running GeneticSearch, population size {population_size}, No bootstap, majority random initial population")
-    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3)
-    genetic_search.init_population(structured_ratio=.25, bootstrap=False)
-    genetic_search.fit(n_generations=10)
-    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_more_random")
-
-
-    n = x.shape[1]
-    mi_constraints = {i:{'l': [n-1]} for i in range(n - 1)} # force "response" variable to have lowest mi_rank
-    logging.info(f"Running GeneticSearch, population size {population_size}, default params, with mi_constraints")
-    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3, mi_constraints=mi_constraints)
-    genetic_search.init_population()
-    genetic_search.fit(n_generations=10)
-    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_default")
-
-    logging.info(f"Running GeneticSearch, population size {population_size}, No bootstap, majority random initial population, with mi_constraints")
-    genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=3, mi_constraints=mi_constraints)
-    genetic_search.init_population(structured_ratio=.25, bootstrap=False)
-    genetic_search.fit(n_generations=10)
-    dump_last_generation(genetic_search, f"{infile.split('.')[0]}_more_random")
-
-def main():
-    if len(sys.argv) != 3:
-        raise Exception("usage: python project1.py <infile>.csv <outfile>.gph")
-
-    inputfilename = sys.argv[1]
-    outputfilename = sys.argv[2]
-    compute(inputfilename, outputfilename)
-
-
-if __name__ == '__main__':
-    main()
