@@ -44,6 +44,16 @@ class StochasticLocalSearch(BayesNetwork):
                     return bn
     
     def restart_G(self, iter):
+        dy_vals = [v[1] for _, v in self.searches.items()]
+        y_vals = [v[2] for _, v in self.searches.items()]
+
+        if len(self.searches.keys()) == 1 or \
+                max(y_vals) == self.searches[-1][2] or \
+                max(dy_vals) == 0:
+            # restart to initial value
+            G, _, y = self.searches[-1]
+            return G, y
+
         self.cnt_restart += 1
         while True:
             key = random.choice(list(self.searches.keys()))
@@ -57,6 +67,8 @@ class StochasticLocalSearch(BayesNetwork):
     def fit(self):
         y = self.bayesian_score()
         y_max, G_max = y, self.G.copy()
+
+        self.searches[-1] = (self.G.copy(), 0, y)
 
         temp = self.init_temp
         cnt_trials = 0 # number of iterations since last update
@@ -76,7 +88,6 @@ class StochasticLocalSearch(BayesNetwork):
                     y = y_neighbor
                     self.G = bn_neighbor.G.copy()
                     cnt_trials = 0
-                
                 else:
                     cnt_trials += 1
             
@@ -96,7 +107,7 @@ class StochasticLocalSearch(BayesNetwork):
 
         if self.cnt_restart == 0:
             G_max = self.G.copy()
-            return self.G.bayesian_score()
+            return self.bayesian_score()
 
         self.G = G_max.copy()
         return y_max
