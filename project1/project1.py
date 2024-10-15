@@ -5,7 +5,6 @@ import genetic_search
 import local_search
 import logging
 import pickle
-from bayes_network import BayesNetwork
 
 """
 # for vectorization
@@ -31,8 +30,15 @@ def dump_final(G, score):
         pickle.dump(G, f)
     
 param_map = {
-    "small": (1000, True, 0.5, 3, 5), # TODO change n_generations
-    "medium": (500, True, 0.5, 2, 5),
+    "small": (1000, True, 0.5, 3, 15), # TODO change n_generations
+    "medium": (2000, True, 0.5, 3, 20), # will increase max in degree be better?
+    "large": (200, True, 0.5, 3, 5)
+}
+
+n_samples_map = {
+    "small": 200,
+    "medium": 100,
+    "large": 10
 }
 
 def compute(infile):
@@ -41,16 +47,16 @@ def compute(infile):
     infile_name = infile.split('.')[0]
     utils.initLogging(f"both_{infile_name}")
 
-    # n_samples = 10 # 1000
-    # local_search.boostrap_fit(x, n_samples)
+    n_samples = n_samples_map[infile_name]
+    k2_graphs, l_graphs = local_search.boostrap_fit(x, n_samples)
 
     population_size, bootstrap_init, \
         structured_init_ratio, max_in_degree, \
         n_generations = param_map[infile_name]
-
-
+    
+    
     candidates = genetic_search.compute_genetic_search(x, population_size, bootstrap_init,
-        structured_init_ratio, max_in_degree, n_generations)
+        structured_init_ratio, max_in_degree, n_generations, init_pop=l_graphs[:int(len(l_graphs) * 0.1)]) # add best l_graphs in init pop
     
     logging.info("Run local search on best network from genetic search")
     G = candidates[0][0].copy() # highest scoring graph from genetic
@@ -63,7 +69,6 @@ def compute(infile):
     logging.info(f"Final edges: {final_edges}")
     dump_final(l_search.G.copy(), final_score)
 
-    logging.info(f"Size of bayesian score cache: items, {len(BayesNetwork.bayesian_score_cache.keys())}, {sys.getsizeof(BayesNetwork.bayesian_score_cache) / (1024**2)}MB")
     
     outfilename = f"{infile_name}_({round(final_score, 2)}).gph"
     write_gph(l_search.G.copy(), idx2names, outfilename)

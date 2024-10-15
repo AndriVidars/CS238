@@ -3,7 +3,6 @@ import numpy as np
 import networkx as nx
 import random
 from tqdm import tqdm
-import utils
 import logging
 import pickle
 import multiprocessing
@@ -105,8 +104,8 @@ def mutate_bayesian_dag(G, max_in_degree, mutation_rate=0.025, mi_matrix=None):
     return mutated_G
 
 def create_bayes_network(args):
-    x, G = args
-    return BayesNetwork(x, G)
+    x, G, cache = args
+    return BayesNetwork(x, G, bayesian_score_cache=cache)
 
 def generate_offspring(args):
     parent1, parent2, max_in_degree, mi_matrix, mutation_rate = args
@@ -115,7 +114,7 @@ def generate_offspring(args):
     return mutated_offspring
 
 def compute_candidate(bayes_net):
-    return (bayes_net.G.copy(), bayes_net.bayesian_score())
+    return (bayes_net.G.copy(), bayes_net.bayesian_score(), bayes_net.bayesian_score_cache)
 
 def generate_random_dag_wrapper(args):
     num_nodes, max_in_degree, mi_matrix = args
@@ -135,11 +134,15 @@ class GeneticSearch:
         self.population_size = population_size
         self.population = []
         self.mi_matrix = mutual_information(x, mi_constraints)
+        self.bayes_score_cache = {}
     
-    def init_population(self, structured_ratio=0.75, bootstrap=True):
+    def init_population(self, structured_ratio=0.75, bootstrap=True, init_pop=None):
         # structured_ratio: fraction of candidates generated with mutual information ranking
         logging.info(f"Generating initial population with structured ratio: {structured_ratio}")
-        cnt_random_candidates = int((1 - structured_ratio) * self.population_size)
+        if init_pop is not None:
+            self.population.extend(init_pop)
+
+        cnt_random_candidates = int((1 - structured_ratio) * (self.population_size - len(self.population)))
         cnt_structured_candidates = self.population_size - cnt_random_candidates
 
         num_cores = multiprocessing.cpu_count()
@@ -169,13 +172,16 @@ class GeneticSearch:
     def next_gen(self, mutation_rate=0.025, elite_ratio=0.1):
         num_cores = multiprocessing.cpu_count()
 
-        args_list = [(self.x, G) for G in self.population]
+        args_list = [(self.x, G, self.bayes_score_cache) for G in self.population]
         with ProcessPoolExecutor(max_workers=num_cores) as executor:
             bayesian_networks = list(executor.map(create_bayes_network, args_list))
 
         # Compute candidates
         with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            candidates = list(executor.map(compute_candidate, bayesian_networks))        
+            candidates = list(executor.map(compute_candidate, bayesian_networks))
+
+        for c in candidates:
+            self.bayes_score_cache.update(c[2]) # shared cache      
 
         candidates.sort(key=lambda x: x[1], reverse=True)
 
@@ -203,7 +209,7 @@ class GeneticSearch:
         self.population = new_population
 
         # Prepare arguments for create_bayes_network again
-        args_list = [(self.x, G) for G in self.population]
+        args_list = [(self.x, G, self.bayes_score_cache) for G in self.population]
         with ProcessPoolExecutor(max_workers=num_cores) as executor:
             return list(executor.map(create_bayes_network, args_list))
 
@@ -232,7 +238,7 @@ class GeneticSearch:
 def dump_last_generation(genetic_search: GeneticSearch, filename):
     num_cores = multiprocessing.cpu_count()
 
-    args_list = [(genetic_search.x, G) for G in genetic_search.population]
+    args_list = [(genetic_search.x, G, genetic_search.bayes_score_cache) for G in genetic_search.population]
     with ProcessPoolExecutor(max_workers=num_cores) as executor:
         bayesian_networks = list(executor.map(create_bayes_network, args_list))
     
@@ -247,9 +253,10 @@ def dump_last_generation(genetic_search: GeneticSearch, filename):
     
     return candidates
 
-def compute_genetic_search(x, population_size, bootstrap_init, structured_init_ratio, max_in_degree, n_generations=10, dumpfilename='dump'):
+def compute_genetic_search(x, population_size, bootstrap_init, structured_init_ratio, max_in_degree, n_generations=10, dumpfilename='dump', init_pop=None):
     logging.info(f"Running GeneticSearch\n population size: {population_size}, boostrap_init: {bootstrap_init}, structured_init_ratio: {structured_init_ratio}, max_in_degree: {max_in_degree}")
     genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=max_in_degree)
-    genetic_search.init_population(structured_ratio=structured_init_ratio, bootstrap=bootstrap_init)
+    genetic_search.init_population(structured_ratio=structured_init_ratio, bootstrap=bootstrap_init, init_pop=init_pop)
     genetic_search.fit(n_generations=n_generations)
+    logging.info(f"Size of bayesian score cache: items, {len(genetic_search.bayes_score_cache.keys())}, {sys.getsizeof(genetic_search.bayes_score_cache) / (1024**2)}MB")
     return dump_last_generation(genetic_search, f"{dumpfilename}") # this returns candidates from last generation

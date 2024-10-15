@@ -1,14 +1,9 @@
 import numpy as np
 import networkx as nx
 from scipy.special import loggamma
-from lru import LRU
 
 class BayesNetwork:
-    # shared cache across all instances
-    # thus cannot run bootsrap fit(k2) anymore
-    bayesian_score_cache = LRU(100_000)
-
-    def __init__(self, x, G=None):
+    def __init__(self, x, G=None, bayesian_score_cache=None):
         self.x = x
         self.x_values_range = np.max(x, axis=0)
         self.n = x.shape[1]
@@ -19,6 +14,8 @@ class BayesNetwork:
             self.G.add_nodes_from(range(self.n))
         else:
             self.G = G
+        
+        self.bayesian_score_cache = bayesian_score_cache if bayesian_score_cache is not None else {}
 
         self.value_index_array = np.zeros((self.n, np.max(self.x_values_range), self.n_obs), dtype=bool)
         for i in range(self.n):
@@ -34,8 +31,8 @@ class BayesNetwork:
     def baysian_score_component(self, i, parents):
         # i: node
         # parents: tuple of parent nodes
-        if (i, parents) in BayesNetwork.bayesian_score_cache:
-            return BayesNetwork.bayesian_score_cache[(i, parents)]
+        if (i, parents) in self.bayesian_score_cache:
+            return self.bayesian_score_cache[(i, parents)]
 
         p = 0
         r_i = self.x_values_range[i]
@@ -66,7 +63,7 @@ class BayesNetwork:
             p += loggamma(alpha_ij0) - loggamma(alpha_ij0 + m_ij0)
             p += np.sum(loggamma(alpha_ijk + m_ijk))
         
-        BayesNetwork.bayesian_score_cache[(i, parents)] = p
+        self.bayesian_score_cache[(i, parents)] = p
         return p
 
         

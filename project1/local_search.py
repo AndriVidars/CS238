@@ -117,7 +117,12 @@ def dump_best_network(graph, M, name):
     with open(f'pickles/bootstrap_{M}_{name}.pkl', 'wb') as f:
         pickle.dump(graph, f)
 
-def generate_ordering(x):
+def generate_ordering(x, random_prob=0.5):
+    if random.random() < random_prob:
+        vals = list(range(x.shape[1]))
+        random.shuffle(vals)
+        return tuple(vals)
+
     x_sample = x[np.random.choice(x.shape[0], x.shape[0], replace=True)]
     mi_rank = mutual_information_ordering(x_sample)
     rank_perturbed = perturb_ordering(mi_rank)
@@ -126,8 +131,8 @@ def generate_ordering(x):
 def process_ordering(args):
     x, ordering = args
     k2 = K2Search(x, ordering=ordering)
-    k2_score = k2.fit(max_parents=2)
-    local_search = StochasticLocalSearch(x, k2.G)
+    k2_score = k2.fit(max_parents=2) # change to 3?
+    local_search = StochasticLocalSearch(x, k2.G, max_iter=1000)
     local_search_score = local_search.fit()
     return (k2.G.copy(), k2_score), (local_search.G.copy(), local_search_score)
 
@@ -150,12 +155,20 @@ def boostrap_fit(x, M):
         results = list(executor.map(process_ordering, args_list))
     
     k2_networks_out, local_search_networks_out = zip(*results)
-    k2_max = max(k2_networks_out, key=lambda x: x[1])
-    l_max = max(local_search_networks_out, key=lambda x: x[1])
+
+    k2_networks_out = sorted(k2_networks_out, key=lambda x: x[1], reverse=True)
+    local_search_networks_out = sorted(local_search_networks_out, key=lambda x: x[1], reverse=True)
+
+    k2_max = k2_networks_out[0][1]
+    l_max = local_search_networks_out[0][1]
     
-    logging.info(f'K2 Max: {k2_max[1]}')
-    logging.info(f'Localsearch Max: {l_max[1]}')
+    logging.info(f'K2 Max: {k2_max}')
+    logging.info(f'Localsearch Max: {l_max}')
     
-    dump_best_network(k2_max[0], M, f"k2_({round(k2_max[1], 2)})")
-    dump_best_network(l_max[0], M, f"local_search_({round(l_max[1], 2)})")
-    return k2_max, l_max
+    dump_best_network(k2_networks_out[0][0], M, f"k2_({round(k2_max, 2)})")
+    dump_best_network(local_search_networks_out[0][0], M, f"local_search_({round(l_max, 2)})")
+
+    k_graphs = [x[0] for x in k2_networks_out]
+    l_graphs = [x[0] for x in local_search_networks_out]
+
+    return k_graphs, l_graphs
