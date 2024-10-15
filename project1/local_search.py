@@ -117,7 +117,7 @@ def dump_best_network(graph, M, name):
     with open(f'pickles/bootstrap_{M}_{name}.pkl', 'wb') as f:
         pickle.dump(graph, f)
 
-def generate_ordering(x, random_prob=0.5):
+def generate_ordering(x, random_prob=0.25):
     if random.random() < random_prob:
         vals = list(range(x.shape[1]))
         random.shuffle(vals)
@@ -143,7 +143,7 @@ def boostrap_fit(x, M):
     # for all unique mutual_information ranks, run k2 with that rank
     # and then start local search from the graph generated from k2
     num_cores = multiprocessing.cpu_count()
-    logging.info(f"Running bootstrap localsearch fit, M = {M}")
+    logging.info(f"Running bootstrap localsearch fit, M = {M}, num_cores = {num_cores}")
     with ProcessPoolExecutor(max_workers=num_cores) as executor:
         orderings = list(executor.map(generate_ordering, [x] * M))
     ordering_ls = set(orderings)
@@ -155,7 +155,6 @@ def boostrap_fit(x, M):
         results = list(executor.map(process_ordering, args_list))
     
     k2_networks_out, local_search_networks_out = zip(*results)
-
     k2_networks_out = sorted(k2_networks_out, key=lambda x: x[1], reverse=True)
     local_search_networks_out = sorted(local_search_networks_out, key=lambda x: x[1], reverse=True)
 

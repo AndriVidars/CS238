@@ -32,13 +32,13 @@ def dump_final(G, score):
 param_map = {
     "small": (1000, True, 0.5, 3, 15), # TODO change n_generations
     "medium": (2000, True, 0.5, 3, 20), # will increase max in degree be better?
-    "large": (200, True, 0.5, 3, 5)
+    "large": (1000, True, 0.5, 3, 20)
 }
 
 n_samples_map = {
     "small": 200,
     "medium": 100,
-    "large": 10
+    "large": 50
 }
 
 def compute(infile):

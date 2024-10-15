@@ -216,7 +216,7 @@ class GeneticSearch:
 
     def fit(self, n_generations):
         num_cores = multiprocessing.cpu_count()
-        logging.info(f'Start training GeneticSearch')
+        logging.info(f'Start training GeneticSearch, num_cores = {num_cores}')
         for i in tqdm(range(n_generations), desc="Training BN structure", disable=True):
             logging.info(f'Generation: {i+1}')
             bayesian_networks = self.next_gen()
