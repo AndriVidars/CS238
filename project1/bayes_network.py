@@ -65,7 +65,9 @@ class BayesNetwork:
         
         self.bayesian_score_cache[(i, parents)] = p
         return p
-
+    
+    def bayesian_score_delta(self, node, parents_curr, parents_next):
+        return self.baysian_score_component(node, parents_next) - self.baysian_score_component(node, parents_curr)
         
     def bayesian_score(self):
         p = 0

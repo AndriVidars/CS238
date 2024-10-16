@@ -16,7 +16,7 @@ def randint_exclude(low, high, exclude):
             return num
     
 class StochasticLocalSearch(BayesNetwork):
-    def __init__(self, x, G=None, initial_temperature=1.0, cooling_rate=0.99, max_iter=1000, restart_threshold=100, max_parents=3):
+    def __init__(self, x, G=None, restart_Gs=None, initial_temperature=1.0, cooling_rate=0.99, max_iter=1000, restart_threshold=100, max_parents=3):
         super().__init__(x)
         self.max_iter = max_iter
         self.init_temp = initial_temperature
@@ -25,89 +25,88 @@ class StochasticLocalSearch(BayesNetwork):
         self.max_parents = max_parents
         self.cnt_restart = 0
 
-        self.searches = {} # iter -> Graph at that stage
         if G is not None:
             self.G = G.copy()
         
+        # set of networks to init from in randomized restart
+        if restart_Gs is None:
+            self.restart_Gs = [G.copy()]
+        else:
+            self.restart_Gs = restart_Gs
+        
     def rand_graph_neighbor(self):
-        bn = self.copy()
+        # return (i, j, action, parents_curr, parents_next) # i -> j edge
         while True:
             i = np.random.randint(0, self.n)
             j = randint_exclude(0, self.n, i)
-            if bn.G.has_edge(i, j):
-                bn.G.remove_edge(i, j)
-                return bn
+            parents_curr = list(self.G.predecessors(j))
             
-            elif not nx.has_path(bn.G, j, i):
-                if len(list(self.G.predecessors(i))) < self.max_parents:
-                    bn.G.add_edge(i, j)
-                    return bn
+            if self.G.has_edge(i, j):
+                parents_next = [x for x in parents_curr if x != i]
+                return (i, j, 'r', tuple(sorted(parents_curr)), tuple(sorted(parents_next)))
+            
+            elif not nx.has_path(self.G, j, i):
+                if len(parents_curr) < self.max_parents:
+                    parents_next = parents_curr + [i]
+                    return (i, j, 'a', tuple(sorted(parents_curr)), tuple(sorted(parents_next)))
     
-    def restart_G(self, iter):
-        dy_vals = [v[1] for _, v in self.searches.items()]
-        y_vals = [v[2] for _, v in self.searches.items()]
-
-        if len(self.searches.keys()) == 1 or \
-                max(y_vals) == self.searches[-1][2] or \
-                max(dy_vals) == 0:
-            # restart to initial value
-            G, _, y = self.searches[-1]
-            return G, y
-
+    def restart_G(self):
         self.cnt_restart += 1
-        while True:
-            key = random.choice(list(self.searches.keys()))
-            if iter == key:
-                continue
-            
-            G, d_y, y = self.searches[key]
-            if d_y > 0:
-                return G, y
+        idx = random.randint(0, len(self.restart_Gs) - 1)
+        restart_G = self.restart_Gs[idx].copy()
+        bn = BayesNetwork(self.x, restart_G)
+        y = bn.bayesian_score()
+        return restart_G, y
+        
 
     def fit(self):
         y = self.bayesian_score()
         y_max, G_max = y, self.G.copy()
 
-        self.searches[-1] = (self.G.copy(), 0, y)
-
         temp = self.init_temp
         cnt_trials = 0 # number of iterations since last update
-        for iter in range(self.max_iter):
-            bn_neighbor = self.rand_graph_neighbor()
-            y_neighbor = bn_neighbor.bayesian_score()
-            d_y = y_neighbor - y
-            if d_y > 0:
-                self.searches[iter] = (self.G.copy(), d_y, y_neighbor)
-                y = y_neighbor
-                self.G = bn_neighbor.G.copy()
+        for _ in range(self.max_iter):
+            i, j, action, parents_curr, parents_next = self.rand_graph_neighbor()
+            delta_y = self.bayesian_score_delta(j, parents_curr, parents_next)
+            if delta_y > 0:
                 cnt_trials = 0
+                y += delta_y
+                if action == 'a':
+                    # add edge
+                    self.G.add_edge(i, j)
+                elif action == 'r':
+                    # remove edge
+                    self.G.remove_edge(i, j)
             else:
-                threshold = np.exp(d_y / temp)
-                if np.random.uniform(0, 1) < threshold:
-                    self.searches[iter] = (self.G.copy(), d_y, y_neighbor)
-                    y = y_neighbor
-                    self.G = bn_neighbor.G.copy()
+                threshold = np.exp(delta_y / temp)
+                if random.random() < threshold:
                     cnt_trials = 0
+                    y += delta_y
+                    if action == 'a':
+                        # add edge
+                        self.G.add_edge(i, j)
+                    elif action == 'r':
+                        # remove edge
+                        self.G.remove_edge(i, j)
                 else:
                     cnt_trials += 1
             
             temp *= self.cooling_rate
-            
+                            
             # Randomized restart
             if cnt_trials == self.restart_threshold:
                 if y > y_max:
                     G_max = self.G.copy()
                     y_max = y
                 
-                G_restart, y_restart = self.restart_G(iter)
-                self.G = G_restart.copy()
-                y = y_restart
+                self.G, y = self.restart_G()
                 cnt_trials = 0
                 temp = self.init_temp
 
         if self.cnt_restart == 0:
-            G_max = self.G.copy()
-            return self.bayesian_score()
+            if y > y_max:
+                G_max = self.G.copy()
+                y_max = y
 
         self.G = G_max.copy()
         return y_max
@@ -131,8 +130,8 @@ def generate_ordering(x, random_prob=0.25):
 def process_ordering(args):
     x, ordering = args
     k2 = K2Search(x, ordering=ordering)
-    k2_score = k2.fit(max_parents=2) # change to 3?
-    local_search = StochasticLocalSearch(x, k2.G, max_iter=1000)
+    k2_score = k2.fit() # change to 3?
+    local_search = StochasticLocalSearch(x, k2.G, max_iter=1000, max_parents=min(x.shape[1] - 2, 12)) # overdoing it for large/medium? # TODO change max iter
     local_search_score = local_search.fit()
     return (k2.G.copy(), k2_score), (local_search.G.copy(), local_search_score)
 
@@ -167,7 +166,5 @@ def boostrap_fit(x, M):
     dump_best_network(k2_networks_out[0][0], M, f"k2_({round(k2_max, 2)})")
     dump_best_network(local_search_networks_out[0][0], M, f"local_search_({round(l_max, 2)})")
 
-    k_graphs = [x[0] for x in k2_networks_out]
-    l_graphs = [x[0] for x in local_search_networks_out]
 
-    return k_graphs, l_graphs
+    return k2_networks_out, local_search_networks_out

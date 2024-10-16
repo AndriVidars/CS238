@@ -4,14 +4,6 @@ import utils
 import genetic_search
 import local_search
 import logging
-import pickle
-
-"""
-# for vectorization
-import os
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-"""
 
 def write_gph(dag, idx2names, filename):
     with open(f"graphs/{filename}", 'w') as f:
@@ -24,21 +16,18 @@ def read_csv_to_array(infile):
         x = np.genfromtxt(f, delimiter=',', skip_header=0,dtype='int') # already read line 0
     
     return x, header
-
-def dump_final(G, score):
-    with open(f'pickles/final_({(round(score, 2))}).pkl', 'wb') as f:
-        pickle.dump(G, f)
-    
+ 
 param_map = {
-    "small": (1000, True, 0.5, 3, 15), # TODO change n_generations
-    "medium": (2000, True, 0.5, 3, 20), # will increase max in degree be better?
-    "large": (1000, True, 0.5, 3, 20)
+    "small": (500, True, 0.5, 4, 5), # TODO change n_generations
+    # not used
+    "medium": (1000, True, 0.5, 3, 10), # will increase max in degree be better?
+    "large": (1000, True, 0.5, 3, 5)
 }
 
 n_samples_map = {
-    "small": 200,
-    "medium": 100,
-    "large": 50
+    "small": 50, # TODO: increase
+    "medium": 800,
+    "large": 800 # try to increase
 }
 
 def compute(infile):
@@ -48,18 +37,32 @@ def compute(infile):
     utils.initLogging(f"both_{infile_name}")
 
     n_samples = n_samples_map[infile_name]
-    k2_graphs, l_graphs = local_search.boostrap_fit(x, n_samples)
+    k2_networks, l_networks = local_search.boostrap_fit(x, n_samples)
+    l_graph = l_networks[0][0]
+    k2_graph = k2_networks[0][0]
+    
+    outfilename_l = f"localS_{infile_name}_({round(l_networks[0][1], 2)}).gph"
+    outfilename_k2 = f"K2_{infile_name}_({round(k2_networks[0][1], 2)}).gph"
+
+    write_gph(l_graph.copy(), idx2names, outfilename_l)
+    write_gph(k2_graph.copy(), idx2names, outfilename_k2)
+
+    if infile_name in ['medium', 'large']:
+        return
 
     population_size, bootstrap_init, \
         structured_init_ratio, max_in_degree, \
         n_generations = param_map[infile_name]
     
-    
-    candidates = genetic_search.compute_genetic_search(x, population_size, bootstrap_init,
-        structured_init_ratio, max_in_degree, n_generations, init_pop=l_graphs[:int(len(l_graphs) * 0.1)]) # add best l_graphs in init pop
+
+    final_population = genetic_search.compute_genetic_search(x, population_size, bootstrap_init,
+        structured_init_ratio, max_in_degree, n_generations)
     
     logging.info("Run local search on best network from genetic search")
-    G = candidates[0][0].copy() # highest scoring graph from genetic
+    G = final_population[0][0].G.copy() # highest scoring graph from genetic
+    outfilename = f"genetic_{infile_name}_({round(final_population[0][1], 2)}).gph"
+    write_gph(G.copy(), idx2names, outfilename)
+
     l_search = local_search.StochasticLocalSearch(x, G, max_iter=2500) # TODO tune max_iter
     l_search.fit()
     final_score = l_search.bayesian_score()
@@ -67,8 +70,6 @@ def compute(infile):
     
     logging.info(f"Final score: {final_score}")
     logging.info(f"Final edges: {final_edges}")
-    dump_final(l_search.G.copy(), final_score)
-
     
     outfilename = f"{infile_name}_({round(final_score, 2)}).gph"
     write_gph(l_search.G.copy(), idx2names, outfilename)

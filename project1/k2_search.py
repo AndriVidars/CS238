@@ -33,25 +33,29 @@ class K2Search(BayesNetwork):
         else:
             self.ordering = range(self.n)
 
-    def fit(self, max_parents=2):
+    def fit(self, max_parents = 2):
+        max_parents=min(10, self.n - 2) # maybe comment out
+        y = self.bayesian_score() # starting bayesian score
+        
         for k, i in enumerate(self.ordering[1:], start=1):
-            y = self.bayesian_score()
+            parents_curr = list(self.G.predecessors(i))
             while True:
-                if len(list(self.G.predecessors(i))) == max_parents:
+                if len(parents_curr) == max_parents:
                     break
 
-                y_best, j_best = float('-inf'), None
+                delta_max, j_best = 0, None
                 for j in self.ordering[:k]:
                     if not self.G.has_edge(j, i):
-                        self.G.add_edge(j, i)
-                        y_ = self.bayesian_score()
-                        self.G.remove_edge(j, i)
-                        if y_ > y_best:
-                            y_best, j_best = y_, j
+                        parents_next = parents_curr + [j]
+                        y_delta = self.bayesian_score_delta(i, tuple(sorted(parents_curr)), tuple(sorted(parents_next)))
+                        if y_delta > delta_max:
+                            delta_max = y_delta
+                            j_best = j
                 
-                if y_best > y:
+                if delta_max > 0:
                     self.G.add_edge(j_best, i)
-                    y = y_best
+                    parents_curr.append(j_best)
+                    y += delta_max
                 else:
                     break 
         return y
