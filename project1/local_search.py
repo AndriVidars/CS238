@@ -7,7 +7,12 @@ import pickle
 import logging
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
+import math
+from multiprocessing import Manager, Lock
 
+manager = Manager()
+global_max_scores = manager.dict({'k2_max_score': float('-inf'), 'local_max_score': float('-inf')})
+score_lock = Lock()
 
 def randint_exclude(low, high, exclude):
     while True:
@@ -16,7 +21,7 @@ def randint_exclude(low, high, exclude):
             return num
     
 class StochasticLocalSearch(BayesNetwork):
-    def __init__(self, x, G=None, restart_Gs=None, initial_temperature=1.0, cooling_rate=0.99, max_iter=1000, restart_threshold=100, max_parents=3):
+    def __init__(self, x, G=None, restart_Gs=None, initial_temperature=0.75, cooling_rate=0.99, max_iter=10000, restart_threshold=200, max_parents=3):
         super().__init__(x)
         self.max_iter = max_iter
         self.init_temp = initial_temperature
@@ -116,7 +121,8 @@ def dump_best_network(graph, M, name):
     with open(f'pickles/bootstrap_{M}_{name}.pkl', 'wb') as f:
         pickle.dump(graph, f)
 
-def generate_ordering(x, random_prob=0.25):
+# increased random prob
+def generate_ordering(x, random_prob=0.75):
     if random.random() < random_prob:
         vals = list(range(x.shape[1]))
         random.shuffle(vals)
@@ -127,13 +133,29 @@ def generate_ordering(x, random_prob=0.25):
     rank_perturbed = perturb_ordering(mi_rank)
     return tuple(rank_perturbed)
 
-def process_ordering(args):
+def process_k2(args):
     x, ordering = args
     k2 = K2Search(x, ordering=ordering)
-    k2_score = k2.fit() # change to 3?
-    local_search = StochasticLocalSearch(x, k2.G, max_iter=1000, max_parents=min(x.shape[1] - 2, 12)) # overdoing it for large/medium? # TODO change max iter
+    k2_score = k2.fit(max_parents=min(x.shape[1] - 1, 25))
+
+    with score_lock:
+        if k2_score > global_max_scores['k2_max_score']:
+            global_max_scores['k2_max_score'] = k2_score
+            logging.info(f"New global K2 max score: {k2_score}")
+
+    return (k2.G.copy(), k2_score)
+
+def process_local_search(args):
+    x, G = args
+    local_search = StochasticLocalSearch(x, G, max_iter=40000, max_parents=min(x.shape[1] - 1, 25)) # TODO change max iter
     local_search_score = local_search.fit()
-    return (k2.G.copy(), k2_score), (local_search.G.copy(), local_search_score)
+
+    with score_lock:
+        if local_search_score > global_max_scores['local_max_score']:
+            global_max_scores['local_max_score'] = local_search_score
+            logging.info(f"New global local search max score: {local_search_score}")
+            
+    return (local_search.G.copy(), local_search_score)
 
 def boostrap_fit(x, M):
     # M number of bootstrap iters(tries, most do not result in unique ordering)
@@ -143,6 +165,7 @@ def boostrap_fit(x, M):
     # and then start local search from the graph generated from k2
     num_cores = multiprocessing.cpu_count()
     logging.info(f"Running bootstrap localsearch fit, M = {M}, num_cores = {num_cores}")
+    
     with ProcessPoolExecutor(max_workers=num_cores) as executor:
         orderings = list(executor.map(generate_ordering, [x] * M))
     ordering_ls = set(orderings)
@@ -150,12 +173,20 @@ def boostrap_fit(x, M):
     logging.info(f'Number of unique variable orders: {len(ordering_ls)}')
     args_list = [(x, o) for o in ordering_ls]
     
+    logging.info("Running K2")
     with ProcessPoolExecutor(max_workers=num_cores) as executor:
-        results = list(executor.map(process_ordering, args_list))
+        results_k2 = list(executor.map(process_k2, args_list))
     
-    k2_networks_out, local_search_networks_out = zip(*results)
-    k2_networks_out = sorted(k2_networks_out, key=lambda x: x[1], reverse=True)
-    local_search_networks_out = sorted(local_search_networks_out, key=lambda x: x[1], reverse=True)
+    k2_networks_out = sorted(results_k2, key=lambda x: x[1], reverse=True)
+    k2_top_Gs = k2_networks_out[:min(250, math.ceil(0.05*len(k2_networks_out)))]
+
+    logging.info("Running Hill-Climb local search on best")
+    args_list = [(x, G[0]) for G in k2_top_Gs]
+    with ProcessPoolExecutor(max_workers=num_cores) as executor:
+        results_local_search = list(executor.map(process_local_search, args_list))
+
+
+    local_search_networks_out = sorted(results_local_search, key=lambda x: x[1], reverse=True)
 
     k2_max = k2_networks_out[0][1]
     l_max = local_search_networks_out[0][1]
@@ -163,8 +194,5 @@ def boostrap_fit(x, M):
     logging.info(f'K2 Max: {k2_max}')
     logging.info(f'Localsearch Max: {l_max}')
     
-    dump_best_network(k2_networks_out[0][0], M, f"k2_({round(k2_max, 2)})")
-    dump_best_network(local_search_networks_out[0][0], M, f"local_search_({round(l_max, 2)})")
-
 
     return k2_networks_out, local_search_networks_out

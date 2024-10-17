@@ -24,13 +24,31 @@ param_map = {
     "large": (1000, True, 0.5, 3, 5)
 }
 
+# Tune this
 n_samples_map = {
-    "small": 50, # TODO: increase
-    "medium": 800,
-    "large": 800 # try to increase
+    "small": 50,
+    "medium": 25000, # TODO tune
+    "large": 8000
 }
 
 def compute(infile):
+    x, x_header = read_csv_to_array(infile)
+    idx2names = {i: x for i, x in enumerate(x_header)}
+    infile_name = infile.split('.')[0]
+    utils.initLogging(f"parallel_{infile_name}")
+
+    n_samples = n_samples_map[infile_name]
+    k2_networks, l_networks = local_search.boostrap_fit(x, n_samples)
+    l_graph = l_networks[0][0]
+    k2_graph = k2_networks[0][0]
+    
+    outfilename_l = f"parallel_local_{infile_name}_({round(l_networks[0][1], 2)}).gph"
+    outfilename_k2 = f"parallel_k2_{infile_name}_({round(k2_networks[0][1], 2)}).gph"
+
+    write_gph(l_graph.copy(), idx2names, outfilename_l)
+    write_gph(k2_graph.copy(), idx2names, outfilename_k2)
+'''
+def compute_(infile):
     x, x_header = read_csv_to_array(infile)
     idx2names = {i: x for i, x in enumerate(x_header)}
     infile_name = infile.split('.')[0]
@@ -73,7 +91,8 @@ def compute(infile):
     
     outfilename = f"{infile_name}_({round(final_score, 2)}).gph"
     write_gph(l_search.G.copy(), idx2names, outfilename)
-
+'''
+    
 def main():
     if len(sys.argv) != 2:
         raise Exception("usage: python project1.py <infile>.csv")
