@@ -21,7 +21,7 @@ def randint_exclude(low, high, exclude):
             return num
     
 class StochasticLocalSearch(BayesNetwork):
-    def __init__(self, x, G=None, restart_Gs=None, initial_temperature=0.75, cooling_rate=0.99, max_iter=10000, restart_threshold=200, max_parents=3):
+    def __init__(self, x, G=None, restart_Gs=None, initial_temperature=0.95, cooling_rate=0.95, max_iter=10000, restart_threshold=1000, max_parents=3):
         super().__init__(x)
         self.max_iter = max_iter
         self.init_temp = initial_temperature
@@ -122,7 +122,7 @@ def dump_best_network(graph, M, name):
         pickle.dump(graph, f)
 
 # increased random prob
-def generate_ordering(x, random_prob=0.75):
+def generate_ordering(x, random_prob=0.55):
     if random.random() < random_prob:
         vals = list(range(x.shape[1]))
         random.shuffle(vals)
@@ -136,7 +136,7 @@ def generate_ordering(x, random_prob=0.75):
 def process_k2(args):
     x, ordering = args
     k2 = K2Search(x, ordering=ordering)
-    k2_score = k2.fit(max_parents=min(x.shape[1] - 1, 25))
+    k2_score = k2.fit(max_parents=min(x.shape[1] - 1, 35))
 
     with score_lock:
         if k2_score > global_max_scores['k2_max_score']:
@@ -147,14 +147,14 @@ def process_k2(args):
 
 def process_local_search(args):
     x, G = args
-    local_search = StochasticLocalSearch(x, G, max_iter=40000, max_parents=min(x.shape[1] - 1, 25)) # TODO change max iter
+    local_search = StochasticLocalSearch(x, G, max_iter=250000, max_parents=min(x.shape[1] - 1, 45)) # TODO change max iter
     local_search_score = local_search.fit()
 
     with score_lock:
         if local_search_score > global_max_scores['local_max_score']:
             global_max_scores['local_max_score'] = local_search_score
             logging.info(f"New global local search max score: {local_search_score}")
-            
+
     return (local_search.G.copy(), local_search_score)
 
 def boostrap_fit(x, M):
@@ -178,7 +178,7 @@ def boostrap_fit(x, M):
         results_k2 = list(executor.map(process_k2, args_list))
     
     k2_networks_out = sorted(results_k2, key=lambda x: x[1], reverse=True)
-    k2_top_Gs = k2_networks_out[:min(250, math.ceil(0.05*len(k2_networks_out)))]
+    k2_top_Gs = k2_networks_out[:min(250, math.ceil(0.10*len(k2_networks_out)))]
 
     logging.info("Running Hill-Climb local search on best")
     args_list = [(x, G[0]) for G in k2_top_Gs]

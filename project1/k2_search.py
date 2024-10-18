@@ -14,7 +14,7 @@ def mutual_information_ordering(data):
     mi_ordering = list(np.argsort(-np.array(mi))) + [n - 1]
     return mi_ordering
 
-def perturb_ordering(ordering, swap_prob=0.25, max_swaps=-1):
+def perturb_ordering(ordering, swap_prob=0.05, max_swaps=-1):
     if max_swaps == -1:
         max_swaps = int(len(ordering)*(3/4))
 
