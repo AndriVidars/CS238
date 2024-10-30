@@ -1,11 +1,9 @@
 import numpy as np
 import networkx as nx
-from functools import lru_cache
 from scipy.special import loggamma
-from itertools import product
 
 class BayesNetwork:
-    def __init__(self, x, G=None):
+    def __init__(self, x, G=None, bayesian_score_cache=None):
         self.x = x
         self.x_values_range = np.max(x, axis=0)
         self.n = x.shape[1]
@@ -16,54 +14,67 @@ class BayesNetwork:
             self.G.add_nodes_from(range(self.n))
         else:
             self.G = G
+        
+        self.bayesian_score_cache = bayesian_score_cache if bayesian_score_cache is not None else {}
 
-        self.value_index_map = {} # node: {value: ndarray(bool)} # True if x[:, index] == value
+        self.value_index_array = np.zeros((self.n, np.max(self.x_values_range), self.n_obs), dtype=bool)
         for i in range(self.n):
-            self.value_index_map[i] = {}
             for j in range(1, self.x_values_range[i] + 1):
-                self.value_index_map[i][j] = (self.x[:, i] == j)
-    
+                self.value_index_array[i, j - 1] = (self.x[:, i] == j)
+
     def copy(self):
         new_bn = BayesNetwork(self.x)
         new_bn.G = self.G.copy()
-        new_bn.value_index_map = {k: v.copy() for k, v in self.value_index_map.items()}
+        new_bn.value_index_array = self.value_index_array
         return new_bn
-
-    # TODO: will it become necessary to encode/enumerate j
-    @lru_cache(maxsize=None)
-    def m(self, i, j):
-        # node i
-        # j, enumeration of parent node instantiation. represented with tuple of tuples ((node, val))         
-        idx = np.full(self.n_obs, True)
-        if j:
-            for parent_node, parent_node_val in j:
-                idx = np.logical_and(idx, self.value_index_map[parent_node][parent_node_val])
-
-        i_vals = (self.x[idx])[:,i]
-        m_ijk_ = np.array([np.sum(i_vals == k) for k in range(1, self.x_values_range[i] + 1)])
-        m_ij0 = np.sum(idx)
-        return m_ijk_, m_ij0
     
-    @lru_cache(maxsize=None)
-    def get_parent_instantiations(self, parents):        
-        parents_vals = [list(range(1, self.x_values_range[parent] + 1)) for parent in parents]
-        product_vals = product(*parents_vals)
-        return [tuple(zip(parents, values)) for values in product_vals]
+    def baysian_score_component(self, i, parents):
+        # i: node
+        # parents: tuple of parent nodes
+        if (i, parents) in self.bayesian_score_cache:
+            return self.bayesian_score_cache[(i, parents)]
+
+        p = 0
+        r_i = self.x_values_range[i]
+        alpha_ijk = 1
+        alpha_ij0 = r_i * alpha_ijk
+
+        if parents:
+            parent_data = self.x[:, parents]
+            unique_parents_values, inverse_indices = np.unique(
+                parent_data, axis=0, return_inverse=True
+            )
+
+            n_unique_combinations = unique_parents_values.shape[0]
+            m_ijk = np.zeros((n_unique_combinations, r_i), dtype=int)
+            
+            values_of_i = self.x[:, i] - 1
+            np.add.at(m_ijk, (inverse_indices, values_of_i), 1)
+            m_ij0 = m_ijk.sum(axis=1)
+            p += np.sum(
+                loggamma(alpha_ij0) - loggamma(alpha_ij0 + m_ij0) +
+                np.sum(loggamma(alpha_ijk + m_ijk), axis=1)
+            )
+
+        else:
+            counts = np.bincount(self.x[:, i] - 1, minlength=r_i)
+            m_ijk = counts
+            m_ij0 = counts.sum()
+            p += loggamma(alpha_ij0) - loggamma(alpha_ij0 + m_ij0)
+            p += np.sum(loggamma(alpha_ijk + m_ijk))
+        
+        self.bayesian_score_cache[(i, parents)] = p
+        return p
     
+    def bayesian_score_delta(self, node, parents_curr, parents_next):
+        return self.baysian_score_component(node, parents_next) - self.baysian_score_component(node, parents_curr)
+        
     def bayesian_score(self):
         p = 0
         for i in range(self.n):
-            parents = tuple(self.G.predecessors(i))
-                        
-            q = self.get_parent_instantiations(parents) if parents else [()] # case where node has no parents
-            r = self.x_values_range[i]
-            for j in q:
-                m_ijk, m_ij0 = self.m(i, j)
-                alpha_ij0 = r # uniform prior, each alpha_ijk has value 1
-                p += (loggamma(alpha_ij0) - loggamma(alpha_ij0 + m_ij0))
-                for k in range(r): # shifted for 0-indexing
-                    p += loggamma(1 + m_ijk[k]) # uniform prior, denominator term eliminated
-        
+            parents = tuple(sorted(self.G.predecessors(i)))
+            p += self.baysian_score_component(i, parents)
+
         return p
 
 # somewhat modified mutual_information       
@@ -75,16 +86,16 @@ def mutual_information(data, constraints=None):
     n = bayes_net.n
     n_obs = bayes_net.n_obs
 
-    value_index_map = bayes_net.value_index_map
+    value_index_array = bayes_net.value_index_array
     mi_matrix = np.zeros((n, n))
     
     def pairwise_mi(i, j):
         mi = 0
         for x_i in range(1, x_values_range[i] + 1):
-            idx_i = value_index_map[i][x_i]
+            idx_i = value_index_array[i, x_i - 1]
             p_xi = np.count_nonzero(idx_i) / n_obs
             for x_j in range(1, x_values_range[j] + 1):
-                idx_j = value_index_map[j][x_j]
+                idx_j = value_index_array[j, x_j - 1]
                 p_xj = np.count_nonzero(idx_j) / n_obs
                 idx_joint = np.logical_and(idx_i, idx_j)
                 p_joint = np.count_nonzero(idx_joint) / n_obs

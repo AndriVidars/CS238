@@ -2,19 +2,18 @@ import sys
 import numpy as np
 import networkx as nx
 import random
-from tqdm import tqdm
-import utils
 import logging
 import pickle
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from bayes_network import BayesNetwork, mutual_information
+from typing import List
 
-    
-def generate_random_dag(num_nodes, max_in_degree=2, mi_matrix=None):
+# TODO tune max in degree
+def generate_random_bayes_net(x, num_nodes, max_in_degree=4, mi_matrix=None):
     # generate random DAG
-    # if mi_matrix: then use mutual_information 
-    # score to weigh parent node probabilities
+    # if mi_matrix: then use mutual_information score to weigh parent node probabilities
+
     G = nx.DiGraph()
     nodes = list(range(num_nodes))
     G.add_nodes_from(nodes)
@@ -46,23 +45,25 @@ def generate_random_dag(num_nodes, max_in_degree=2, mi_matrix=None):
                 # keep acyclic
                 if not nx.has_path(G, n, parent):
                     G.add_edge(parent, n)
-    
-    return G
+
+    bn = BayesNetwork(x, G)
+    y = bn.bayesian_score()    
+    return bn, y
 
 
-def crossover_bayesian_dags(parent1, parent2, max_in_degree, mi_matrix=None):
-    offspring = nx.DiGraph()
-    offspring.add_nodes_from(parent1.nodes())
-    nodes = list(offspring.nodes())
+def crossover_bayesian_networks(parent1: BayesNetwork, parent2: BayesNetwork, y1, max_in_degree, mi_matrix=None):
+    offspring = parent1.copy()
+    y_offspring = y1
+    nodes = list(offspring.G.nodes())
     random.shuffle(nodes)
 
     for node in nodes:
-        combined_parent_nodes = list(set(parent1.predecessors(node)).union(set(parent2.predecessors(node))))
+        combined_parent_nodes = list(set(parent1.G.predecessors(node)).union(set(parent2.G.predecessors(node))))
 
         if len(combined_parent_nodes) > max_in_degree:
             if mi_matrix is not None:
                 mi_scores = {pred: mi_matrix[pred][node] for pred in combined_parent_nodes}
-                sorted_preds = sorted(mi_scores.items(), key=lambda item: item[1], reverse=True)
+                sorted_preds = sorted(mi_scores.items(), key=lambda item: item[1], reverse=True) # what was I doing here ?
                 selected_preds = [pred for pred, _ in sorted_preds[:max_in_degree]]
             else:
                 random.shuffle(combined_parent_nodes)
@@ -71,61 +72,65 @@ def crossover_bayesian_dags(parent1, parent2, max_in_degree, mi_matrix=None):
             selected_preds = combined_parent_nodes
         
         for pred in selected_preds:
-            if not nx.has_path(offspring, node, pred):
-                offspring.add_edge(pred, node)
+            if not nx.has_path(offspring.G, node, pred):
+                i, j = pred, node
+                parents_curr = list(offspring.G.predecessors(j))
+                parents_next = parents_curr + [i]
+                delta_y = offspring.bayesian_score_delta(j, tuple(sorted(parents_curr)), tuple(sorted(parents_next)))
+                y_offspring += delta_y
+                offspring.G.add_edge(i, j)
     
-    return offspring
+    return offspring, y_offspring
 
-def mutate_bayesian_dag(G, max_in_degree, mutation_rate=0.025, mi_matrix=None):
-    # TODO: tune mutation_rate
-    mutated_G = G.copy()
-    nodes = list(mutated_G.nodes())
-    random.shuffle(nodes) # should not matter
-
+ # TODO: tune mutation_rate
+def mutate_bayesian_network(bayes_net: BayesNetwork, y, max_in_degree, mutation_rate=0.1, mi_matrix=None):
+    nodes = list(bayes_net.G.nodes())
     # Edge Deletion
-    for edge in list(mutated_G.edges()):
-        if random.random() < (mutation_rate/len(nodes)):
-            mutated_G.remove_edge(*edge)
+    for edge in list(bayes_net.G.edges()):
+        if random.random() < (2*mutation_rate/(len(nodes))): # give higher probability to removing node
+            i, j = edge
+            parents_curr = list(bayes_net.G.predecessors(j))
+            parents_next = [x for x in parents_curr if x != i]
+            delta_y = bayes_net.bayesian_score_delta(j, tuple(sorted(parents_curr)), tuple(sorted(parents_next)))
+            bayes_net.G.remove_edge(i, j)
+            y += delta_y
 
-    # Edge reversal
-    for edge in list(mutated_G.edges()):
-        if random.random() < (mutation_rate/len(nodes)):
-            u, v = edge
-            if mutated_G.in_degree(u) < max_in_degree and not nx.has_path(mutated_G, u, v):
-                mutated_G.remove_edge(u, v)
-                mutated_G.add_edge(v, u)
-    
     # Edge addition
     if random.random() < mutation_rate:
-        u, v = random.sample(nodes, 2)
-        if u != v and not mutated_G.has_edge(u, v) and not mutated_G.has_edge(v, u):
-            if mutated_G.in_degree(v) < max_in_degree and not nx.has_path(mutated_G, v, u):
-                mutated_G.add_edge(u, v)
+        i, j = random.sample(nodes, 2)
+        if i != j and not bayes_net.G.has_edge(i, j) and not bayes_net.G.has_edge(j, i):
+            if bayes_net.G.in_degree(j) < max_in_degree and not nx.has_path(bayes_net.G, j, i):
+                parents_curr = list(bayes_net.G.predecessors(j))
+                parents_next = parents_curr + [i]
+                delta_y = bayes_net.bayesian_score_delta(j, tuple(sorted(parents_curr)), tuple(sorted(parents_next)))
+                bayes_net.G.add_edge(i, j)
+                y += delta_y
     
-    return mutated_G
+    return bayes_net, y
 
-def create_bayes_network(args):
-    x, G = args
-    return BayesNetwork(x, G)
 
 def generate_offspring(args):
-    parent1, parent2, max_in_degree, mi_matrix, mutation_rate = args
-    offspring = crossover_bayesian_dags(parent1, parent2, max_in_degree, mi_matrix)
-    mutated_offspring = mutate_bayesian_dag(offspring, max_in_degree, mutation_rate, mi_matrix)
-    return mutated_offspring
+    candidate1, candidate2, max_in_degree, mi_matrix, mutation_rate = args
+    parent1, parent2 = candidate1[0], candidate2[0]
+    y1 = candidate1[1]
 
-def compute_candidate(bayes_net):
-    return (bayes_net.G.copy(), bayes_net.bayesian_score())
+    offspring, y_offspring = crossover_bayesian_networks(parent1, parent2, y1, max_in_degree, mi_matrix)
+    mutated_offspring, y_offspring = mutate_bayesian_network(offspring, y_offspring, max_in_degree, mutation_rate, mi_matrix)
+    return mutated_offspring, y_offspring
 
-def generate_random_dag_wrapper(args):
-    num_nodes, max_in_degree, mi_matrix = args
-    return generate_random_dag(num_nodes, max_in_degree, mi_matrix)
 
-def generate_structured_random_dag(args):
+def generate_random_bayes_net_wrapper(args):
+    x, num_nodes, max_in_degree, mi_matrix = args
+    return generate_random_bayes_net(x, num_nodes, max_in_degree, mi_matrix)
+
+def generate_structured_bayes_net(args):
     x, num_nodes, max_in_degree, bootstrap = args
     x_ = x[np.random.choice(x.shape[0], x.shape[0], replace=True)] if bootstrap else x
     mi_matrix = mutual_information(x_)
-    return generate_random_dag(num_nodes, max_in_degree, mi_matrix=mi_matrix)
+    return generate_random_bayes_net(x, num_nodes, max_in_degree, mi_matrix=mi_matrix)
+
+def compute_bayesian_network_score(bayes_net: BayesNetwork):
+    return (bayes_net.copy(), bayes_net.baysian_score())
 
 class GeneticSearch:
     def __init__(self, x, population_size, max_in_degree=4, mi_constraints=None):
@@ -133,62 +138,62 @@ class GeneticSearch:
         self.num_nodes = x.shape[1]
         self.max_in_degree = max_in_degree
         self.population_size = population_size
-        self.population = []
+        self.population = [] # (bayes_net, y) # bayes net, bayes score pair
         self.mi_matrix = mutual_information(x, mi_constraints)
+        self.bayes_score_cache = {} # "shared cache"
     
-    def init_population(self, structured_ratio=0.75, bootstrap=True):
+    def init_population(self, structured_ratio=0.75, bootstrap=True, init_pop:List[BayesNetwork] = None):
         # structured_ratio: fraction of candidates generated with mutual information ranking
         logging.info(f"Generating initial population with structured ratio: {structured_ratio}")
-        cnt_random_candidates = int((1 - structured_ratio) * self.population_size)
+        
+        if init_pop is not None:
+            with ProcessPoolExecutor(max_workers=num_cores) as executor:
+                pop = list(executor.map(compute_bayesian_network_score, args_list))
+            self.population.extend(pop)
+
+        cnt_random_candidates = int((1 - structured_ratio) * (self.population_size - len(self.population)))
         cnt_structured_candidates = self.population_size - cnt_random_candidates
 
         num_cores = multiprocessing.cpu_count()
-        
-        # Generate random DAGs without mi_matrix in parallel
-        args_list = [(self.num_nodes, 2, None) for _ in range(cnt_random_candidates)]
+        # x, num_nodes, max_in_degree, mi_matrix = args
+        args_list = [(self.x, self.num_nodes, self.max_in_degree, None) for _ in range(cnt_random_candidates)]
         with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            random_dags = list(executor.map(generate_random_dag_wrapper, args_list))
+            random_bayes_nets = list(executor.map(generate_random_bayes_net_wrapper, args_list))
         
-        self.population.extend(random_dags)
+        self.population.extend(random_bayes_nets)
         
-        # Generate DAGs with mi_matrix in parallel
-        args_list = [(self.x, self.num_nodes, 2, bootstrap) for _ in range(cnt_structured_candidates)]
+        args_list = [(self.x, self.num_nodes, self.max_in_degree, bootstrap) for _ in range(cnt_structured_candidates)]
         with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            structured_dags = list(executor.map(generate_structured_random_dag, args_list))
+            structured_dags = list(executor.map(generate_structured_bayes_net, args_list))
         
         self.population.extend(structured_dags)
 
-    def select_candidate(self, candidates):
-        fitness_scores = [x[1] for x in candidates]
-        population = [x[0] for x in candidates]
+    def select_candidate(self):
+        fitness_scores = [x[1] for x in self.population]
 
         total_fitness = sum(fitness_scores)
         selection_probs = [f / total_fitness for f in fitness_scores]
-        return random.choices(population, weights=selection_probs, k=1)[0]
+        return random.choices(self.population, weights=selection_probs, k=1)[0]
     
     def next_gen(self, mutation_rate=0.025, elite_ratio=0.1):
         num_cores = multiprocessing.cpu_count()
 
-        args_list = [(self.x, G) for G in self.population]
-        with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            bayesian_networks = list(executor.map(create_bayes_network, args_list))
+        # update and share bayesian score component cache across population
+        for x in self.population:
+            self.bayes_score_cache.update(x[0].bayesian_score_cache) # shared cache      
 
-        # Compute candidates
-        with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            candidates = list(executor.map(compute_candidate, bayesian_networks))        
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
+        self.population.sort(key=lambda x: x[1], reverse=True) # sort by fitness
 
         elite_count = int(self.population_size * elite_ratio)
-        elites = [x[0] for x in candidates[:elite_count]]
+        elites = self.population[:elite_count]
         new_population = elites.copy()
 
         # Prepare arguments for generate_offspring
         offspring_count = self.population_size - elite_count
         args_list = [
             (
-                self.select_candidate(candidates),
-                self.select_candidate(candidates),
+                self.select_candidate(),
+                self.select_candidate(),
                 self.max_in_degree,
                 self.mi_matrix,
                 mutation_rate,
@@ -202,54 +207,34 @@ class GeneticSearch:
         new_population.extend(offspring_list)
         self.population = new_population
 
-        # Prepare arguments for create_bayes_network again
-        args_list = [(self.x, G) for G in self.population]
-        with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            return list(executor.map(create_bayes_network, args_list))
-
-
     def fit(self, n_generations):
         num_cores = multiprocessing.cpu_count()
-        logging.info(f'Start training GeneticSearch')
-        for i in tqdm(range(n_generations), desc="Training BN structure", disable=True):
+        logging.info(f'Start training GeneticSearch, num_cores = {num_cores}')
+        for i in range(n_generations):
             logging.info(f'Generation: {i+1}')
-            bayesian_networks = self.next_gen()
+            self.next_gen()
 
-            with ProcessPoolExecutor(max_workers=num_cores) as executor:
-                candidates = list(executor.map(compute_candidate, bayesian_networks))
+            self.population.sort(key=lambda x: x[1], reverse=True) # only for logging
+            logging.info(f'Top Candidate Bayesian Score: {self.population[0][1]}')
+            logging.info(f'Top Candidate edges: {self.population[0][0].G.edges}')
 
-            candidates = [(b.G.copy(), b.bayesian_score()) for b in bayesian_networks]
-            candidates.sort(key = lambda x: x[1], reverse = True)
-
-            logging.info(f'Top Candidate Bayesian Score: {candidates[0][1]}')
-            logging.info(f'Top Candidate edges: {candidates[0][0].edges}')
-
-            logging.info(f'Worst candidate Bayesian Score: {candidates[-1][1]}')
-            logging.info(f'Worst candidate edges: {candidates[-1][0].edges}')
+            logging.info(f'Worst candidate Bayesian Score: {self.population[-1][1]}')
+            logging.info(f'Worst candidate edges: {self.population[-1][0].G.edges}')
         
         logging.info(f'Traning GeneticSearch completed')
 
 def dump_last_generation(genetic_search: GeneticSearch, filename):
-    num_cores = multiprocessing.cpu_count()
-
-    args_list = [(genetic_search.x, G) for G in genetic_search.population]
-    with ProcessPoolExecutor(max_workers=num_cores) as executor:
-        bayesian_networks = list(executor.map(create_bayes_network, args_list))
-    
-    with ProcessPoolExecutor(max_workers=num_cores) as executor:
-        candidates = list(executor.map(compute_candidate, bayesian_networks))
-
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    top_score = candidates[0][1]
+    top_score = genetic_search.population[0][1]
 
     with open(f'pickles/{filename}_({(round(top_score, 2))}).pkl', 'wb') as f:
-        pickle.dump(candidates, f)
+        pickle.dump(genetic_search.population, f)
     
-    return candidates
+    return genetic_search.population
 
-def compute_genetic_search(x, population_size, bootstrap_init, structured_init_ratio, max_in_degree, n_generations=10, dumpfilename='dump'):
+def compute_genetic_search(x, population_size, bootstrap_init, structured_init_ratio, max_in_degree, n_generations=10, dumpfilename='dump', init_pop=None):
     logging.info(f"Running GeneticSearch\n population size: {population_size}, boostrap_init: {bootstrap_init}, structured_init_ratio: {structured_init_ratio}, max_in_degree: {max_in_degree}")
     genetic_search = GeneticSearch(x, population_size=population_size, max_in_degree=max_in_degree)
-    genetic_search.init_population(structured_ratio=structured_init_ratio, bootstrap=bootstrap_init)
+    genetic_search.init_population(structured_ratio=structured_init_ratio, bootstrap=bootstrap_init, init_pop=init_pop)
     genetic_search.fit(n_generations=n_generations)
+    logging.info(f"Size of bayesian score cache: items, {len(genetic_search.bayes_score_cache.keys())}, {sys.getsizeof(genetic_search.bayes_score_cache) / (1024**2)}MB")
     return dump_last_generation(genetic_search, f"{dumpfilename}") # this returns candidates from last generation

@@ -11,6 +11,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "cwd": "${fileDirname}",
+            "args": ["small.csv", "small_out.gph"]
         }
     ]
 }
