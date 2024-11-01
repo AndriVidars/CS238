@@ -3,6 +3,7 @@ import utils
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
+import random
 
 # Set the device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -152,7 +153,7 @@ def train_policy_model(states_pv_tensor, rewards_tensor, transition_model, num_i
                 loss_policy.backward()
                 optimizer_policy.step()
                 total_policy_loss += loss_policy.item()
-            print(f'Policy Model Epoch {epoch+1}/{num_epochs}, Loss: {total_policy_loss/len(states_pv_tensor)}')
+            print(f'Policy Model Epoch {epoch}/{num_epochs}, Loss: {total_policy_loss/len(states_pv_tensor)}')
 
     return policy_model
 
@@ -163,60 +164,58 @@ def get_pv(idx):
     p = idx % 500
     return p, v
 
+import numpy as np  # Make sure to import numpy for quantile calculations
+
 def evaluate_transition_model(transition_model, states_pv_tensor, actions_tensor, next_states_pv_tensor):
-    # Set the model to evaluation mode
     transition_model.eval()
-    
-    # Prepare the inputs and targets
     inputs = torch.cat([states_pv_tensor, actions_tensor.unsqueeze(1)], dim=1)
     targets = next_states_pv_tensor
-
-    # Create a DataLoader for the evaluation data
     evaluation_dataset = TensorDataset(inputs, targets)
     evaluation_loader = DataLoader(evaluation_dataset, batch_size=64, shuffle=False)
-    
-    # Initialize counters
-    correct_p = 0
-    total_p = 0
-    correct_v = 0
-    total_v = 0
-    correct_both = 0
-    total_samples = 0
+    absolute_errors_p = []
+    absolute_errors_v = []
 
     with torch.no_grad():
         for batch_inputs, batch_targets in evaluation_loader:
-            # Move data to the appropriate device
             batch_inputs = batch_inputs.to(device)
             batch_targets = batch_targets.to(device)
-            
-            # Get model outputs
-            outputs_p, outputs_v = transition_model(batch_inputs)
-            
-            # Predicted classes
-            _, predicted_p = torch.max(outputs_p, dim=1)
-            _, predicted_v = torch.max(outputs_v, dim=1)
-            
-            # Update counters for position accuracy
-            correct_p += (predicted_p == batch_targets[:, 0]).sum().item()
-            total_p += batch_targets.size(0)
-            
-            # Update counters for velocity accuracy
-            correct_v += (predicted_v == batch_targets[:, 1]).sum().item()
-            total_v += batch_targets.size(0)
-            
-            # Update counters for overall accuracy
-            both_correct = (predicted_p == batch_targets[:, 0]) & (predicted_v == batch_targets[:, 1])
-            correct_both += both_correct.sum().item()
-            total_samples += batch_targets.size(0)
-    
-    # Calculate accuracy metrics
-    p_accuracy = correct_p / total_p
-    v_accuracy = correct_v / total_v
-    overall_accuracy = correct_both / total_samples
-    
-    print(f'Position accuracy: {p_accuracy * 100:.2f}%')
-    print(f'Velocity accuracy: {v_accuracy * 100:.2f}%')
-    print(f'Overall accuracy (both position and velocity correct): {overall_accuracy * 100:.2f}%')
+            outputs = transition_model(batch_inputs)
+            outputs_p, outputs_v = outputs
+
+            if outputs_p.dim() > 1 and outputs_p.size(1) > 1:
+                predicted_p_indices = outputs_p.argmax(dim=1)
+                predicted_v_indices = outputs_v.argmax(dim=1)
+                positions = torch.linspace(0, 499, outputs_p.size(1)).to(device)
+                velocities = torch.linspace(0, 99, outputs_v.size(1)).to(device)
+                predicted_p_values = positions[predicted_p_indices]
+                predicted_v_values = velocities[predicted_v_indices]
+                true_p_indices = batch_targets[:, 0].long()
+                true_v_indices = batch_targets[:, 1].long()
+                true_p_values = positions[true_p_indices]
+                true_v_values = velocities[true_v_indices]
+                abs_errors_p = torch.abs(predicted_p_values - true_p_values)
+                abs_errors_v = torch.abs(predicted_v_values - true_v_values)
+            else:
+                outputs_p = outputs_p.squeeze()
+                outputs_v = outputs_v.squeeze()
+                abs_errors_p = torch.abs(outputs_p - batch_targets[:, 0])
+                abs_errors_v = torch.abs(outputs_v - batch_targets[:, 1])
+
+            absolute_errors_p.extend(abs_errors_p.cpu().numpy())
+            absolute_errors_v.extend(abs_errors_v.cpu().numpy())
+
+    absolute_errors_p = np.array(absolute_errors_p)
+    absolute_errors_v = np.array(absolute_errors_v)
+    quantiles = [0.25, 0.5, 0.75, 0.95, 0.99]
+    quantiles_p = np.quantile(absolute_errors_p, quantiles)
+    quantiles_v = np.quantile(absolute_errors_v, quantiles)
+    print("Quantiles of Absolute Errors for Position (p):")
+    for q, value in zip(quantiles, quantiles_p):
+        print(f"{int(q*100)}th percentile: {value:.4f}")
+    print("\nQuantiles of Absolute Errors for Velocity (v):")
+    for q, value in zip(quantiles, quantiles_v):
+        print(f"{int(q*100)}th percentile: {value:.4f}")
+
 
 if __name__ == '__main__':
     print(f'Running torch on device: {device}')
@@ -229,15 +228,49 @@ if __name__ == '__main__':
     states_pv = np.array([get_pv(s) for s in states])
     next_states_pv = np.array([get_pv(s) for s in next_states])
 
-    states_pv_tensor = torch.tensor(states_pv, dtype=torch.long).to(device)
-    actions_tensor = torch.tensor(actions, dtype=torch.long) - 1  # Zero indexing
-    actions_tensor = actions_tensor.to(device)
-    rewards_tensor = torch.tensor(rewards, dtype=torch.float).to(device)
-    next_states_pv_tensor = torch.tensor(next_states_pv, dtype=torch.long).to(device)
+    dataset = list(zip(states_pv, actions, rewards, next_states_pv))
+    random.shuffle(dataset)
 
-    # Train the Transition Model
-    transition_model = train_transition_model(states_pv_tensor, actions_tensor, next_states_pv_tensor, n_epochs=100)
-    evaluate_transition_model(transition_model, states_pv_tensor, actions_tensor, next_states_pv_tensor)
+    # Split the dataset into training and testing sets (e.g., 90% train, 10% test)
+    split_idx = int(0.9 * len(dataset))
+    train_dataset = dataset[:split_idx]
+    test_dataset = dataset[split_idx:]
+
+    # Unzip the training dataset
+    train_states_pv, train_actions, train_rewards, train_next_states_pv = zip(*train_dataset)
+
+    # Unzip the testing dataset
+    test_states_pv, test_actions, test_rewards, test_next_states_pv = zip(*test_dataset)
+
+    # Convert to numpy arrays
+    train_states_pv = np.array(train_states_pv)
+    train_actions = np.array(train_actions)
+    train_rewards = np.array(train_rewards)
+    train_next_states_pv = np.array(train_next_states_pv)
+
+    test_states_pv = np.array(test_states_pv)
+    test_actions = np.array(test_actions)
+    test_rewards = np.array(test_rewards)
+    test_next_states_pv = np.array(test_next_states_pv)
+
+    # Convert to tensors
+    train_states_pv_tensor = torch.tensor(train_states_pv, dtype=torch.long).to(device)
+    train_actions_tensor = torch.tensor(train_actions, dtype=torch.long) - 1  # Zero indexing
+    train_actions_tensor = train_actions_tensor.to(device)
+    train_rewards_tensor = torch.tensor(train_rewards, dtype=torch.float).to(device)
+    train_next_states_pv_tensor = torch.tensor(train_next_states_pv, dtype=torch.long).to(device)
+
+    test_states_pv_tensor = torch.tensor(test_states_pv, dtype=torch.long).to(device)
+    test_actions_tensor = torch.tensor(test_actions, dtype=torch.long) - 1  # Zero indexing
+    test_actions_tensor = test_actions_tensor.to(device)
+    test_rewards_tensor = torch.tensor(test_rewards, dtype=torch.float).to(device)
+    test_next_states_pv_tensor = torch.tensor(test_next_states_pv, dtype=torch.long).to(device)
+
+    # Train the Transition Model on training data
+    transition_model = train_transition_model(train_states_pv_tensor, train_actions_tensor, train_next_states_pv_tensor, n_epochs=100)
+
+    # Evaluate the Transition Model on testing data
+    evaluate_transition_model(transition_model, test_states_pv_tensor, test_actions_tensor, test_next_states_pv_tensor)
 
     # Train the Policy Model
     # TODO bugfix here
