@@ -5,13 +5,12 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 import random
 from tqdm import tqdm
+import pandas as pd
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Model that learns the transition mechanics
-
-# use one hot encoding of p, v as input to models?
-
+# Model that learns "deterministic" transition mechanics
+# (state(p, v), action) -> next state(p, v)
 class TransitionModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim_p, output_dim_v, dropout_prob=0.5):
         super(TransitionModel, self).__init__()
@@ -28,7 +27,7 @@ class TransitionModel(nn.Module):
         v_out = self.fc_v(x)
         return p_out, v_out
 
-def train_transition_model(states_pv_tensor, actions_tensor, next_states_pv_tensor, n_epochs=50):
+def train_transition_model(states_pv_tensor, actions_tensor, next_states_pv_tensor, n_epochs=100):
     print("Training transition model")
     inputs = torch.cat([states_pv_tensor, actions_tensor.unsqueeze(1)], dim=1)
     targets = next_states_pv_tensor
@@ -100,7 +99,7 @@ def evaluate_transition_model(transition_model, states_pv_tensor, actions_tensor
     for q, value in zip(quantiles, quantiles_v):
         print(f"{int(q*100)}th percentile: {value:.4f}")
 
-
+# model that learns deterministic rewards (state, action) -> reward
 class RewardModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, dropout_prob=0.25):
         super(RewardModel, self).__init__()
@@ -168,23 +167,18 @@ def evaluate_reward_model(rewards_model, states_pv_tensor, actions_tensor, rewar
     accuracy = np.mean(np.array(all_preds) == np.array(all_targets))
     print(f'Rewards Model Accuracy on Test Data: {accuracy * 100:.2f}%\n')
 
-def get_model_pred_arrays(transition_model, rewards_model, num_states=50000, num_actions=7):
-    """
-    Precompute predicted rewards and transitions from NN models.
-    Adjust so that for p >= 466 the states are self-absorbing with reward 0.
-
-    Additionally, provide diagnostics on how many transitions and rewards are overridden
-    due to the constraints (p >= 466).
-    """
+# precompute deterministic transitons/rewards from models
+# make states with p>=466 self absorbing since big reward is achived at that point
+def get_model_pred_arrays(transition_model, rewards_model, num_states=50_000, num_actions=7):
     transition_model.eval()
     rewards_model.eval()
 
-    state_indices = torch.arange(0, num_states, dtype=torch.long).to(device)  # 0-based indexing
+    state_indices = torch.arange(0, num_states, dtype=torch.long).to(device)
 
     positions, velocities = zip(*[get_pv(idx, zero_index=True) for idx in state_indices.cpu().numpy()])
     positions = torch.tensor(positions, dtype=torch.float32, device=device)
     velocities = torch.tensor(velocities, dtype=torch.float32, device=device)
-    states_pv_tensor = torch.stack([positions, velocities], dim=1)  # Shape: (num_states, 2)
+    states_pv_tensor = torch.stack([positions, velocities], dim=1)
 
     repeated_states_pv_tensor = states_pv_tensor.repeat_interleave(num_actions, dim=0)  
     actions_tensor = torch.arange(num_actions, device=device).repeat(num_states).unsqueeze(1) 
@@ -210,7 +204,6 @@ def get_model_pred_arrays(transition_model, rewards_model, num_states=50000, num
     next_state_indices = next_state_indices_overridden
     transitions = next_state_indices.view(num_states, num_actions).cpu().numpy()
 
-    # Predict rewards using the rewards model
     with torch.no_grad():
         rewards_output = rewards_model(inputs) 
         predicted_reward_indices = rewards_output.argmax(dim=1)
@@ -220,12 +213,10 @@ def get_model_pred_arrays(transition_model, rewards_model, num_states=50000, num
     predicted_rewards[absorbing_mask] = 0.0 
     rewards = predicted_rewards.view(num_states, num_actions).cpu().numpy()
 
-    assert transitions.max() < num_states, "Transition indices exceed the number of states!"
-    assert transitions.min() >= 0, "Transition indices contain negative values!"
-
     return transitions, rewards
 
-def value_iteration(transitions, rewards, num_states=50000, num_actions=7, discount_rate=0.999, theta=1e-4, max_iters=10000):
+# deterministic value iteration, should converge in a couple of iterations
+def value_iteration(transitions, rewards, num_states=50_000, num_actions=7, discount_rate=0.999, theta=1e-4, max_iters=100):
     V = np.zeros(num_states)
 
     for i in tqdm(range(max_iters), desc="Value Iteration"):
@@ -233,9 +224,7 @@ def value_iteration(transitions, rewards, num_states=50000, num_actions=7, disco
         action_values = rewards + discount_rate * V[transitions]
         V = np.max(action_values, axis=1)
         delta = np.max(np.abs(V - V_prev))
-
-        if (i+1) % 1000 == 0 or i == 0:
-            print(f"Iteration {i+1}: ΔV = {delta:.6f}")
+        print(f"Iteration {i+1}: ΔV = {delta:.6f}")
 
         if delta < theta:
             print(f"Value Iteration converged after {i+1} iterations.")
@@ -244,25 +233,49 @@ def value_iteration(transitions, rewards, num_states=50000, num_actions=7, disco
     policy = np.argmax(action_values, axis=1) + 1
     return V, policy
 
-# Get position/velocity representation for states
 def get_pv(idx, zero_index=False):
     idx = idx if zero_index else idx - 1
     v = idx // 500
     p = idx % 500
     return p, v
 
+def preprocess_data(data):
+    df = pd.DataFrame({
+        'state': data[:, 0],
+        'action': data[:, 1],
+        'reward': data[:, 2],
+        'next_state': data[:, 3]
+    })
+
+    groups = df.groupby(['state', 'action'])
+    selected_next_states = {}
+
+    for (state, action), group in groups:
+        counts = group['next_state'].value_counts()
+        max_count = counts.iloc[0]
+        top_states = counts[counts == max_count].index.tolist()
+        if len(top_states) == 1:
+            selected_next_states[(state, action)] = top_states[0]
+        else:
+            selected_next_states[(state, action)] = min(top_states)
+
+    df['next_state'] = df.apply(lambda row: selected_next_states[(row['state'], row['action'])], axis=1)
+    data[:, 3] = df['next_state'].values
+    return data
+
 if __name__ == '__main__':
     print(f'Running torch on device: {device}')
 
     data = utils.read_data('medium')
+    data = preprocess_data(data)
     states = data[:, 0]
     actions = data[:, 1]
     rewards = data[:, 2]
-    
     next_states = data[:, 3]
+
     states_pv = np.array([get_pv(s) for s in states])
     next_states_pv = np.array([get_pv(s) for s in next_states])
-   
+
     unique_rewards = np.unique(rewards)
     reward_to_idx = {reward: idx for idx, reward in enumerate(unique_rewards)}
     idx_to_reward = {idx: reward for reward, idx in reward_to_idx.items()}
@@ -272,12 +285,10 @@ if __name__ == '__main__':
     test_states_tensor, test_actions_tensor, test_rewards_tensor, test_rewards_idx_tensor, test_next_states_tensor = \
         utils.train_test_split_tensors(states_pv, actions, rewards, reward_idx, next_states_pv, device, train_ratio=0.9)
 
-    # train transition model
-    transition_model = train_transition_model(train_states_tensor, train_actions_tensor, train_next_states_tensor, n_epochs=150) # n_epochs 50
+    transition_model = train_transition_model(train_states_tensor, train_actions_tensor, train_next_states_tensor, n_epochs=100)
     evaluate_transition_model(transition_model, test_states_tensor, test_actions_tensor, test_next_states_tensor)
 
-    # train rewards model
-    rewards_model = train_rewards_model(train_states_tensor, train_actions_tensor, train_rewards_idx_tensor, n_epochs=25) # n_epochs 20
+    rewards_model = train_rewards_model(train_states_tensor, train_actions_tensor, train_rewards_idx_tensor, n_epochs=20)
     evaluate_reward_model(rewards_model, test_states_tensor, test_actions_tensor, test_rewards_idx_tensor, unique_rewards)
 
     transitions, rewards = get_model_pred_arrays(transition_model, rewards_model)
@@ -285,4 +296,3 @@ if __name__ == '__main__':
 
     utils.write_policy('medium', policy)
     print("Done")
-    

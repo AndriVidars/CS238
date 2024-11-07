@@ -1,121 +1,75 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import numpy as np
 import utils
 import random
-from collections import deque
-from tqdm import tqdm
-import numpy as np
+from value_iteration import ValueIteration
+import time
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def split_state(state):
+    state_str = f"{state:06d}"
+    return state_str[:2], state_str[2:4], state_str[4:]
 
-class QModel(nn.Module):
-    def __init__(self, input_dim=2, hidden_dim=64, dropout_prob=0.5):
-        super(QModel, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.dropout = nn.Dropout(dropout_prob)
-        self.fc2 = nn.Linear(hidden_dim, 1)
-        
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        return x
+# this data prep stuff is overly complicated
+# much of it is leftover from some attempt
+# at solving problem with deep Q learning
+# could have just enumerated each of the 500 states
 
-def epsilon_greedy_action(q_model, state, explore_rate, action_space=range(9)):
-    if random.random() < explore_rate:
-        return int(random.choice(action_space))
-    else:
-        q_values = [q_model(torch.tensor([state, a], dtype=torch.float32).to(device)).item() for a in action_space]
-        return torch.argmax(torch.tensor(q_values))
-
-# TODO: tune lr
-def train_q_model(states_tensor, actions_tensor, rewards_tensor, next_states_tensor,
-                  batch_size=64, max_iters=10_000, lr=1e-3, gamma=0.95, explore_rate=0.1,
-                  buffer_size=1000):
-
-    q_model = QModel(input_dim=2).to(device)
-    optimizer = optim.SGD(q_model.parameters(), lr=lr)
+def prepare_data_np():
+    data = utils.read_data('large').astype(int)
+    np.random.shuffle(data)
+    states = data[:, 0]
+    actions = data[:, 1] - 1 
+    rewards = data[:, 2]
+    next_states = data[:, 3]
     
-    # init buffer
-    replay_buffer = deque(maxlen=buffer_size)
-    
-    for idx in range(buffer_size):
-        experience = (states_tensor[idx].item(), actions_tensor[idx].item(),
-                      rewards_tensor[idx].item(), next_states_tensor[idx].item())
-        replay_buffer.append(experience)
-    
-    for i in tqdm(range(max_iters)):
-        batch = random.sample(replay_buffer, min(batch_size, len(replay_buffer)))
-        
-        batch_states = torch.tensor([x[0] for x in batch], dtype=torch.float32).to(device)
-        batch_actions = torch.tensor([x[1] for x in batch], dtype=torch.int32).to(device)
-        batch_rewards = torch.tensor([x[2] for x in batch], dtype=torch.float32).to(device)
-        batch_next_states = torch.tensor([x[3] for x in batch], dtype=torch.float32).to(device)
-        
-        current_q_inputs = torch.stack([batch_states, batch_actions], dim=1).float().to(device)
-        current_q_values = q_model(current_q_inputs).squeeze()
-        
-        with torch.no_grad():
-            next_q_values = []
-            for j in range(batch_size):
-                next_state = batch_next_states[j].item()
-                next_action = epsilon_greedy_action(q_model, next_state, explore_rate)
-                next_q_input = torch.tensor([next_state, next_action], dtype=torch.float32).to(device)
-                next_q_values.append(q_model(next_q_input).item())
-            
-            next_q_values = torch.tensor(next_q_values, dtype=torch.float32).to(device)
-            target_q_values = batch_rewards + gamma * next_q_values
-        
-        #td_errors = target_q_values - current_q_values
-        #loss = -(td_errors * current_q_values).mean()
-        td_errors = target_q_values - current_q_values
-        loss = td_errors.pow(2).mean()  # MSE
-        
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(q_model.parameters(), max_norm=1.0)
-        optimizer.step()
-        
-        if explore_rate > 0.1:
-            explore_rate *= 0.9999
-        
-        idx = torch.randint(0, states_tensor.size(0), (1,)).item()
-        experience = (states_tensor[idx].item(), actions_tensor[idx].item(),
-                      rewards_tensor[idx].item(), next_states_tensor[idx].item())
-        replay_buffer.append(experience)
+    state_dict = {i: sorted(set(split_state(s)[i] for s in states)) for i in range(3)}
+    index_map = [{x: i for i, x in enumerate(state_dict[i])} for i in range(3)]
+    rev_index_map = [{v: k for k, v in d.items()} for d in index_map]
 
-        if i % 1000 == 0:
-            print(f"Iteration {i}, Loss: {loss.item()}, Avg TD Error: {td_errors.mean().item()}")
+    states_segments = np.array([tuple(index_map[i][x] for i, x in enumerate(split_state(state))) for state in states])
+    next_states_segments = np.array([tuple(index_map[i][x] for i, x in enumerate(split_state(state))) for state in next_states])
 
-    print("Training complete")
-    return q_model
+    return states_segments, next_states_segments, actions, rewards, state_dict, index_map, rev_index_map
 
-def extract_policy(q_model, num_states=302020, num_actions=9):
-    s_vals = range(1, num_states + 1)
-    a_vals = range(num_actions)
+def get_state_idx(state_segmented):
+    return sum(x*10**(2-i) for i, x in enumerate(state_segmented))
+
+def get_state_segments(idx):
+    return (
+        idx // 100,
+        (idx % 100) // 10,
+        idx % 10
+    )
+
+def write_policy_(policy, rev_index_map):
+    n_states_out = 302020
+    random.seed(23)
+    rand = random.randint(1, 9) # random action for "fake" states
+    policy_out = [rand for _ in range(n_states_out)]
+
+    # write policy for actual states
+    for j in range(policy.shape[0]):
+        segment_idx = get_state_segments(j)
+        state_str = ""
+        for i, x in enumerate(segment_idx):
+            state_str += rev_index_map[i][x]
+        
+        state_idx = int(state_str) - 1
+        policy_out[state_idx] = policy[j]
     
-    state_arr = np.array([[s, a] for s in s_vals for a in a_vals])
-    
-    state_tensor = torch.tensor(state_arr, dtype=torch.float32).to(device)
-    
-    q_values = q_model(state_tensor).view(num_states, num_actions)
-    policy = torch.argmax(q_values, dim=1) + 1
-    
-    return policy.cpu().numpy().astype(int)
+    utils.write_policy('large', policy_out)
 
 if __name__ == '__main__':
-    data = utils.read_data("large")
-    data = utils.augment_data(data, duplication_factor=10) # upsample non zero rewards
-    print(f"Data shape after augment: {data.shape}")
+    start_time = time.time()
+    states_segments, next_states_segments, actions, \
+    rewards, state_dict, index_map, rev_index_map = prepare_data_np()
+
+    states = np.array([get_state_idx(state) for state in states_segments])
+    next_states = np.array([get_state_idx(state) for state in next_states_segments])
+
+    val_iter = ValueIteration(states, actions, rewards, next_states, num_states=500, num_actions=9)
+    _, policy = val_iter.value_iteration()
+    write_policy_(policy, rev_index_map)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"Time elapsed: {elapsed_time:.2f} seconds")
     
-    states_tensor, actions_tensor, rewards_tensor, next_states_tensor = utils.get_mdp_tensors(data, device)
-    actions_tensor = (actions_tensor - 1).to(torch.int32)
-    
-    # TODO: do Prioritized Experience Replay rather than data augment(upsampling rewards) # or mix of the two 
-    # maybe use upsampling with duplication factor 4-6 and also prioritized experience replay
-    q_model = train_q_model(states_tensor, actions_tensor, rewards_tensor, next_states_tensor, max_iters=20_000)
-    policy = extract_policy(q_model)
-    utils.write_policy("large", policy)
-    
-    print("done")
