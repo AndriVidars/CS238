@@ -91,9 +91,6 @@ class PolicyIteration:
             if np.linalg.norm(self.policy - new_policy) < 1e-10:
                 break
             
-            #if np.allclose(self.policy, new_policy):
-            #   break
-            
             self.policy = new_policy
             self.T_pi = self.T_policy()
             self.R_pi = self.R_policy()

@@ -2,29 +2,6 @@ import numpy as np
 from bayes_network import BayesNetwork, mutual_information
 import random
 
-def mutual_information_ordering(data):
-    n = data.shape[1]
-    #mi_constraints = {i:{'l': [n-1]} for i in range(n - 1)} # force last column to have lowest rank ("response variable")
-    mi_matrix = mutual_information(data)
-    mi = []
-    for i in range(n - 1):
-        mi_total = sum(mi_matrix[i, j] for j in range(n) if i != j)
-        mi.append(mi_total)
-
-    mi_ordering = list(np.argsort(-np.array(mi))) + [n - 1]
-    return mi_ordering
-
-def perturb_ordering(ordering, swap_prob=0.05, max_swaps=-1):
-    if max_swaps == -1:
-        max_swaps = int(len(ordering)*(3/4))
-
-    for _ in range(max_swaps):
-        if random.random() < swap_prob:
-            i = random.randint(0, len(ordering) - 2)
-            ordering[i], ordering[i+1] = ordering[i+1], ordering[i]
-    return ordering
-
-
 class K2Search(BayesNetwork):
     def __init__(self, x, ordering=None):
         super().__init__(x)
@@ -59,3 +36,25 @@ class K2Search(BayesNetwork):
                 else:
                     break 
         return y
+    
+def mutual_information_ordering(data):
+    n = data.shape[1]
+    #mi_constraints = {i:{'l': [n-1]} for i in range(n - 1)} # force last column to have lowest rank ("response variable")
+    mi_matrix = mutual_information(data)
+    mi = []
+    for i in range(n - 1):
+        mi_total = sum(mi_matrix[i, j] for j in range(n) if i != j)
+        mi.append(mi_total)
+
+    mi_ordering = list(np.argsort(-np.array(mi))) + [n - 1]
+    return mi_ordering
+
+def perturb_ordering(ordering, swap_prob=0.05, max_swaps=-1):
+    if max_swaps == -1:
+        max_swaps = int(len(ordering)*(3/4))
+
+    for _ in range(max_swaps):
+        if random.random() < swap_prob:
+            i = random.randint(0, len(ordering) - 2)
+            ordering[i], ordering[i+1] = ordering[i+1], ordering[i]
+    return ordering

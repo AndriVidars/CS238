@@ -67,6 +67,10 @@ class BayesNetwork:
         return p
     
     def bayesian_score_delta(self, node, parents_curr, parents_next):
+        # change in bayesian score by adding/dropping edges
+        # that is change the set of parents of a node
+        # parents_curr: current parent nodes of node
+        # parents_next: potential next set of parents after adding/dropping an edge
         return self.baysian_score_component(node, parents_next) - self.baysian_score_component(node, parents_curr)
         
     def bayesian_score(self):
@@ -77,10 +81,11 @@ class BayesNetwork:
 
         return p
 
-# somewhat modified mutual_information       
+    
 def mutual_information(data, constraints=None):
+    # compute mutual information between all variables/nodes
+    # somewhat modified mutual_information   
     # constraints: {node: [lowest(list of forced lowest mi rank in order), highest()]}
-
     bayes_net = BayesNetwork(data)
     x_values_range = bayes_net.x_values_range
     n = bayes_net.n

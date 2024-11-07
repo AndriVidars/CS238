@@ -63,7 +63,6 @@ class StochasticLocalSearch(BayesNetwork):
         y = bn.bayesian_score()
         return restart_G, y
         
-
     def fit(self):
         y = self.bayesian_score()
         y_max, G_max = y, self.G.copy()
@@ -117,12 +116,7 @@ class StochasticLocalSearch(BayesNetwork):
         return y_max
 
 
-def dump_best_network(graph, M, name):
-    with open(f'pickles/bootstrap_{M}_{name}.pkl', 'wb') as f:
-        pickle.dump(graph, f)
-
-# increased random prob
-def generate_ordering(x, random_prob=0.55):
+def generate_ordering(x, random_prob=0.5):
     if random.random() < random_prob:
         vals = list(range(x.shape[1]))
         random.shuffle(vals)
@@ -147,7 +141,7 @@ def process_k2(args):
 
 def process_local_search(args):
     x, G = args
-    local_search = StochasticLocalSearch(x, G, max_iter=250000, max_parents=min(x.shape[1] - 1, 45)) # TODO change max iter
+    local_search = StochasticLocalSearch(x, G, max_iter=10000, max_parents=min(x.shape[1] - 1, 45)) # TODO change max iter
     local_search_score = local_search.fit()
 
     with score_lock:

@@ -1,7 +1,6 @@
 import sys
 import numpy as np
 import utils
-import genetic_search
 import local_search
 
 def write_gph(dag, idx2names, filename):
@@ -16,17 +15,11 @@ def read_csv_to_array(infile):
     
     return x, header
  
-param_map = {
-    "small": (500, True, 0.5, 4, 5),
-    "medium": (1000, True, 0.5, 3, 10),
-    "large": (1000, True, 0.5, 3, 5)
-}
 
-# Tune this
 n_samples_map = {
-    "small": 50,
-    "medium": 25000, # TODO tune
-    "large": 4000
+    "small": 10000,
+    "medium": 5000,
+    "large": 1000
 }
 
 def compute(infile):
@@ -46,46 +39,12 @@ def compute(infile):
     write_gph(l_graph.copy(), idx2names, outfilename_l)
     write_gph(k2_graph.copy(), idx2names, outfilename_k2)
 
-def compute_genetic(infile):
-    x, x_header = read_csv_to_array(infile)
-    idx2names = {i: x for i, x in enumerate(x_header)}
-    infile_name = infile.split('.')[0]
-    utils.initLogging(f"both_{infile_name}")
-
-    n_samples = n_samples_map[infile_name]
-    k2_networks, l_networks = local_search.boostrap_fit(x, n_samples)
-    l_graph = l_networks[0][0]
-    k2_graph = k2_networks[0][0]
-    
-    outfilename_l = f"localS_{infile_name}_({round(l_networks[0][1], 2)}).gph"
-    outfilename_k2 = f"K2_{infile_name}_({round(k2_networks[0][1], 2)}).gph"
-
-    write_gph(l_graph.copy(), idx2names, outfilename_l)
-    write_gph(k2_graph.copy(), idx2names, outfilename_k2)
-
-    if infile_name in ['medium', 'large']:
-        return
-
-    population_size, bootstrap_init, \
-        structured_init_ratio, max_in_degree, \
-        n_generations = param_map[infile_name]
-    
-    # run genetic search
-    final_population = genetic_search.compute_genetic_search(x, population_size, bootstrap_init,
-        structured_init_ratio, max_in_degree, n_generations)
-
-    G = final_population[0][0].G.copy()
-    outfilename = f"genetic_{infile_name}_({round(final_population[0][1], 2)}).gph"
-    write_gph(G.copy(), idx2names, outfilename)
-
-
 def main():
     if len(sys.argv) != 2:
         raise Exception("usage: python project1.py <infile>.csv")
 
     inputfilename = sys.argv[1]
     compute(inputfilename)
-
 
 if __name__ == '__main__':
     main()
